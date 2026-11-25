@@ -1,0 +1,441 @@
+__values = this and @__values or (o) ->
+  s = `typeof Symbol == 'function'` and Symbol.iterator
+  m = s and o[s]
+  i = 0
+  if m
+    return m.call(o)
+  if o and `typeof o.length == 'number'`
+    return { next: ->
+      if o and i >= o.length
+        o = undefined
+      {
+        value: o and o[i++]
+        done: !o
+      }
+ }
+  throw new TypeError((if s then 'Object is not iterable.' else 'Symbol.iterator is not defined.'))
+  return
+__read = this and @__read or (o, n) ->
+  m = `typeof Symbol == 'function'` and o[Symbol.iterator]
+  if !m
+    return o
+  i = m.call(o)
+  r = undefined
+  ar = []
+  e = undefined
+  try
+    while (`n == void 0` or n-- > 0) and !(r = i.next()).done
+      ar.push r.value
+  catch error
+    e = error: error
+  finally
+    try
+      if r and !r.done and (m = i['return'])
+        m.call i
+    catch __caught
+      throw __caught
+    finally
+      if e
+        throw e.error
+  ar
+__spreadArray = this and @__spreadArray or (to, from, pack) ->
+  if pack or `arguments.length == 2`
+    i = 0
+    l = from.length
+    ar = undefined
+    while i < l
+      if ar or !(i of from)
+        if !ar
+          ar = Array::slice.call(from, 0, i)
+        ar[i] = from[i]
+      i++
+  to.concat ar or Array::slice.call(from)
+# Legacy public compatibility implementation, owned by module-svelte.
+
+module.exports = (require, module, exports, __dirname, __filename, kernel) ->
+  # Experimental compilation gate. Not registered in SvelteEngine until the
+  # complete frontend contract, including loading and aliases, is validated.
+  # Uses the public Svelte AST and public store subscription contract only.
+
+  transformSharedState = (source) ->
+    `var declaration`
+    `var d`
+    `var declaration`
+    `var statement`
+    e_1 = undefined
+    _a = undefined
+    e_2 = undefined
+    _b = undefined
+    e_3 = undefined
+    _c = undefined
+    e_4 = undefined
+    _d = undefined
+    e_5 = undefined
+    _e = undefined
+    e_6 = undefined
+    _f = undefined
+    e_7 = undefined
+    _g = undefined
+    e_8 = undefined
+    _h = undefined
+    e_9 = undefined
+    _j = undefined
+    _k = undefined
+    _l = undefined
+    parse = require('svelte/compiler').parse
+    ast = parse(source)
+    script = (if `(_k = ast.instance) == null` or `_k == void 0` then undefined else _k.content)
+
+    names = (pattern) ->
+      if !pattern
+        return
+      if `pattern.type == 'Identifier'`
+        declared.add pattern.name
+      else if `pattern.type == 'ObjectPattern'`
+        pattern.properties.forEach (p) ->
+          `var _a`
+          _a = undefined
+          names (if `(_a = p.value) != null` and `_a != void 0` then _a else p.argument)
+      else if `pattern.type == 'ArrayPattern'`
+        pattern.elements.forEach names
+      else if `pattern.type == 'AssignmentPattern'`
+        names pattern.left
+      else if `pattern.type == 'RestElement'`
+        names pattern.argument
+      return
+
+    walk = (node, visit) ->
+      `var _a`
+      `var _b`
+      `var _c`
+      `var _d`
+      e_10 = undefined
+      _a = undefined
+      if !node or `typeof node != 'object'`
+        return
+      if `typeof node.type == 'string'`
+        visit node
+      try
+        _b = __values(Object.entries(node))
+        _c = _b.next()
+        while !_c.done
+          _d = __read(_c.value, 2)
+          key = _d[0]
+          value = _d[1]
+          if `key == 'parent'`
+            _c = _b.next()
+            continue
+          if Array.isArray(value)
+            value.forEach (item) ->
+              walk item, visit
+          else if value and `typeof value == 'object'`
+            walk value, visit
+          _c = _b.next()
+      catch e_10_1
+        e_10 = error: e_10_1
+      finally
+        try
+          if _c and !_c.done and (_a = _b.return)
+            _a.call _b
+        catch __caught
+          throw __caught
+        finally
+          if e_10
+            throw e_10.error
+      return
+
+    indirect = (expression) ->
+      matched = false
+      walk expression, (node) ->
+        if `node.type == 'CallExpression'` and dependentHelpers.has(node.callee.name)
+          matched = true
+        return
+      matched
+
+    wrapExpression = (expression) ->
+      edits.push
+        start: expression.start
+        end: expression.start
+        value: '($'.concat(prefix, ', ')
+      edits.push
+        start: expression.end
+        end: expression.end
+        value: ')'
+      return
+
+    if !script
+      return source
+    declared = new Set
+    try
+      _m = __values(script.body)
+      _o = _m.next()
+      while !_o.done
+        statement = _o.value
+        node = (if `(_l = statement.declaration) != null` and `_l != void 0` then _l else statement)
+        if `node.type == 'ImportDeclaration'`
+          node.specifiers.forEach (s) ->
+            names s.local
+        if `node.type == 'VariableDeclaration'`
+          node.declarations.forEach (d) ->
+            names d.id
+        if `node.type == 'FunctionDeclaration'` or `node.type == 'ClassDeclaration'`
+          names node.id
+        _o = _m.next()
+    catch e_1_1
+      e_1 = error: e_1_1
+    finally
+      try
+        if _o and !_o.done and (_a = _m.return)
+          _a.call _m
+      catch __caught
+        throw __caught
+      finally
+        if e_1
+          throw e_1.error
+    if declared.has('useState')
+      return source
+    calls = []
+    walk script, (node) ->
+      if `node.type == 'CallExpression'` and `node.callee.type == 'Identifier'` and `node.callee.name == 'useState'`
+        calls.push node
+      return
+    if !calls.length
+      return source
+    prefix = '__scriba'
+    while source.includes(prefix)
+      prefix += '_'
+    edits = []
+    bindings = new Set
+    accepted = new Set
+    declarations = script.body.filter((s) ->
+      `s.type == 'VariableDeclaration'`
+    )
+    try
+      declarations_1 = __values(declarations)
+      declarations_1_1 = declarations_1.next()
+      while !declarations_1_1.done
+        declaration = declarations_1_1.value
+        try
+          e_3 = undefined
+          _p = __values(declaration.declarations)
+          _q = _p.next()
+          while !_q.done
+            d = _q.value
+            if calls.includes(d.init) and `d.id.type == 'Identifier'`
+              bindings.add d.id.name
+              accepted.add d.init
+              edits.push
+                start: d.init.callee.start
+                end: d.init.callee.end
+                value: ''.concat(prefix, '.useState')
+            _q = _p.next()
+        catch e_3_1
+          e_3 = error: e_3_1
+        finally
+          try
+            if _q and !_q.done and (_c = _p.return)
+              _c.call _p
+          catch __caught
+            throw __caught
+          finally
+            if e_3
+              throw e_3.error
+        declarations_1_1 = declarations_1.next()
+    catch e_2_1
+      e_2 = error: e_2_1
+    finally
+      try
+        if declarations_1_1 and !declarations_1_1.done and (_b = declarations_1.return)
+          _b.call declarations_1
+      catch __caught
+        throw __caught
+      finally
+        if e_2
+          throw e_2.error
+    if calls.some(((call) ->
+        !accepted.has(call)
+      ))
+      throw new Error('useState requires a top-level identifier declaration')
+    # Track direct nested aliases without turning primitive destructuring into
+    # a live binding. Arbitrary helper-returned aliases still need a decision.
+    added = true
+    while added
+      added = false
+      try
+        e_4 = undefined
+        declarations_2 = __values(declarations)
+        declarations_2_1 = declarations_2.next()
+        while !declarations_2_1.done
+          declaration = declarations_2_1.value
+          try
+            e_5 = undefined
+            _r = __values(declaration.declarations)
+            _s = _r.next()
+            while !_s.done
+              d = _s.value
+              root = d.init
+              while `(root === null || root === void 0 ? void 0 : root.type) == 'MemberExpression'`
+                root = root.object
+              if `d.id.type == 'Identifier'` and `(root === null || root === void 0 ? void 0 : root.type) == 'Identifier'` and bindings.has(root.name) and !bindings.has(d.id.name)
+                bindings.add d.id.name
+                added = true
+              _s = _r.next()
+          catch e_5_1
+            e_5 = error: e_5_1
+          finally
+            try
+              if _s and !_s.done and (_e = _r.return)
+                _e.call _r
+            catch __caught
+              throw __caught
+            finally
+              if e_5
+                throw e_5.error
+          declarations_2_1 = declarations_2.next()
+      catch e_4_1
+        e_4 = error: e_4_1
+      finally
+        try
+          if declarations_2_1 and !declarations_2_1.done and (_d = declarations_2.return)
+            _d.call declarations_2
+        catch __caught
+          throw __caught
+        finally
+          if e_4
+            throw e_4.error
+    try
+      declarations_3 = __values(declarations)
+      declarations_3_1 = declarations_3.next()
+      while !declarations_3_1.done
+        declaration = declarations_3_1.value
+        if `declaration.kind == 'const'` and declaration.declarations.some(((d) ->
+            bindings.has d.id.name
+          ))
+          edits.push
+            start: declaration.start
+            end: declaration.start + 5
+            value: 'let'
+        declarations_3_1 = declarations_3.next()
+    catch e_6_1
+      e_6 = error: e_6_1
+    finally
+      try
+        if declarations_3_1 and !declarations_3_1.done and (_f = declarations_3.return)
+          _f.call declarations_3
+      catch __caught
+        throw __caught
+      finally
+        if e_6
+          throw e_6.error
+    # Svelte 4 cannot see dependencies hidden inside local helper functions.
+    # Follow their lexical references and make those reads explicit, without
+    # rerunning unrelated template expressions on every document notification.
+    dependentHelpers = new Set
+    helpers = script.body.filter((s) ->
+      `s.type == 'FunctionDeclaration'`
+    )
+    found = true
+    while found
+      found = false
+
+      _loop_1 = (helper) ->
+        if dependentHelpers.has(helper.id.name)
+          return 'continue'
+        depends = false
+        walk helper.body, (node) ->
+          if `node.type == 'Identifier'` and (bindings.has(node.name) or dependentHelpers.has(node.name))
+            depends = true
+          return
+        if depends
+          dependentHelpers.add helper.id.name
+          found = true
+        return
+
+      try
+        e_7 = undefined
+        helpers_1 = __values(helpers)
+        helpers_1_1 = helpers_1.next()
+        while !helpers_1_1.done
+          helper = helpers_1_1.value
+          _loop_1 helper
+          helpers_1_1 = helpers_1.next()
+      catch e_7_1
+        e_7 = error: e_7_1
+      finally
+        try
+          if helpers_1_1 and !helpers_1_1.done and (_g = helpers_1.return)
+            _g.call helpers_1
+        catch __caught
+          throw __caught
+        finally
+          if e_7
+            throw e_7.error
+    try
+      _t = __values(script.body)
+      _u = _t.next()
+      while !_u.done
+        statement = _u.value
+        if `statement.type != 'LabeledStatement'` or `statement.label.name != '$'`
+          _u = _t.next()
+          continue
+        expression = statement.body.expression
+        if `(expression === null || expression === void 0 ? void 0 : expression.type) == 'AssignmentExpression'` and indirect(expression.right)
+          wrapExpression expression.right
+        _u = _t.next()
+    catch e_8_1
+      e_8 = error: e_8_1
+    finally
+      try
+        if _u and !_u.done and (_h = _t.return)
+          _h.call _t
+      catch __caught
+        throw __caught
+      finally
+        if e_8
+          throw e_8.error
+    walk ast.html, (node) ->
+      if [
+          'MustacheTag'
+          'RawMustacheTag'
+          'IfBlock'
+          'EachBlock'
+        ].includes(node.type) and indirect(node.expression)
+        wrapExpression node.expression
+      return
+    refresh = __spreadArray([], __read(bindings), false).map((name) ->
+      ''.concat(name, ' = ').concat name, ';'
+    ).join('\n')
+    edits.push
+      start: script.start
+      end: script.start
+      value: '\nimport { createViewScope as '.concat(prefix, 'Create } from \'logos:scriba-view\';\n') + 'import { onDestroy as '.concat(prefix, 'Destroy } from \'svelte\';\n') + 'const '.concat(prefix, ' = ').concat(prefix, 'Create();\n').concat(prefix, 'Destroy(').concat(prefix, '.destroy);\n')
+    edits.push
+      start: script.end
+      end: script.end
+      value: '\n$: { $'.concat(prefix, '; ').concat(refresh, ' }\n')
+    try
+      _v = __values(edits.sort((a, b) ->
+        b.start - (a.start)
+      ))
+      _w = _v.next()
+      while !_w.done
+        edit = _w.value
+        source = source.slice(0, edit.start) + edit.value + source.slice(edit.end)
+        _w = _v.next()
+    catch e_9_1
+      e_9 = error: e_9_1
+    finally
+      try
+        if _w and !_w.done and (_j = _v.return)
+          _j.call _v
+      catch __caught
+        throw __caught
+      finally
+        if e_9
+          throw e_9.error
+    source
+
+  'use strict'
+  Object.defineProperty exports, '__esModule', value: true
+  exports.transformSharedState = transformSharedState
+  return

@@ -1,0 +1,53 @@
+path = require 'node:path'
+{promises: fs} = require 'node:fs'
+{promisify} = require 'node:util'
+{gzip, brotliCompress, constants} = require 'node:zlib'
+zip = promisify gzip
+brotli = promisify brotliCompress
+
+versionedAsset = (name) -> /\.[a-f0-9]{32}(?:\.chunk\.[A-Za-z0-9_-]+)?\.(?:mjs|css)$/.test name
+
+# Compress once at publication, with at most two concurrent assets.
+precompressAssets = (files) ->
+  cursor = 0
+  await Promise.all Array.from {length: Math.min(2, files.length)}, ->
+    while cursor < files.length
+      file = files[cursor++]
+      continue unless versionedAsset path.basename file
+      bytes = await fs.readFile file
+      continue if bytes.length < 1024
+      params = {}
+      params[constants.BROTLI_PARAM_QUALITY] = 4
+      [gz, br] = await Promise.all [zip(bytes), brotli(bytes, {params})]
+      await Promise.all [fs.writeFile("#{file}.gz", gz), fs.writeFile("#{file}.br", br)]
+    return
+  return
+
+compressedAssets = (cacheDir) -> (req, res, next) ->
+  await undefined if false
+  return next() unless req.method in ['GET', 'HEAD']
+  try
+    name = decodeURIComponent(req.path).slice 1
+  catch
+    return next()
+  return next() unless name is path.basename(name) and versionedAsset(name)
+  res.vary 'Accept-Encoding'
+  return next() if req.headers.range
+  encoding = req.acceptsEncodings 'br', 'gzip', 'identity'
+  return next() unless encoding in ['br', 'gzip']
+  file = path.join cacheDir, "#{name}.#{if encoding is 'br' then 'br' else 'gz'}"
+  try
+    await fs.access file
+  catch
+    return next()
+  res.setHeader 'Content-Type', if name.endsWith '.css' then 'text/css' else 'application/javascript'
+  res.setHeader 'Content-Encoding', encoding
+  res.setHeader 'Cache-Control', 'public, max-age=31536000, immutable'
+  res.sendFile file, (error) ->
+    return unless error
+    res.removeHeader 'Content-Encoding' unless res.headersSent
+    next error
+    return
+  return
+
+module.exports = {versionedAsset, precompressAssets, compressedAssets}

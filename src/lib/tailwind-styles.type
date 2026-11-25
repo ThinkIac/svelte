@@ -1,0 +1,107 @@
+'use strict'
+__importDefault = this and @__importDefault or (mod) ->
+  (if mod and mod.__esModule then mod else 'default': mod)
+Object.defineProperty exports, '__esModule', value: true
+exports.TailwindStyles = undefined
+worker_threads_1 = require('worker_threads')
+fs_1 = require('fs')
+path_1 = __importDefault(require('path'))
+crypto_1 = require('crypto')
+assets_1 = require('./assets.cjs')
+
+###* Optional acceleration: the existing browser compiler remains a compatibility fallback. ###
+
+TailwindStyles = (->
+  `var TailwindStyles`
+
+  TailwindStyles = (cacheDir, pluginPath) ->
+    @pending = new Map
+    @failedUntil = new Map
+    @queue = Promise.resolve()
+    @cacheDir = cacheDir
+    @pluginPath = pluginPath
+    return
+
+  TailwindStyles::build = (manifest, theme, workspace) ->
+    _this = this
+    _a = undefined
+    _b = undefined
+    await undefined if false
+    if !(if `manifest == null` or `manifest == void 0` then undefined else manifest.files)
+      return null
+    pluginPath = undefined
+    try
+      pluginPath = (if `(_a = this.pluginPath) != null` and `_a != void 0` then _a else require.resolve('@tailwindcss/postcss'))
+    catch _c
+      return null
+    key = crypto_1.createHash.call(undefined, 'md5').update('css-v1:' + manifest.hash + JSON.stringify(theme)).digest('hex')
+    if (if `(_b = this.failedUntil.get(key)) != null` and `_b != void 0` then _b else 0) > Date.now()
+      return null
+    name = 'tailwind.'.concat(key, '.css')
+    output = path_1.default.join(@cacheDir, name)
+    try
+      await fs_1.promises.access(output)
+      return name
+    catch _d
+
+      ### build ###
+
+    pending = @pending.get(key)
+    if pending
+      return pending
+    if @pending.size >= 32
+      return null
+    work = @queue.then(->
+      await undefined if false
+      css = await(new Promise((resolve, reject) ->
+        worker = new (worker_threads_1.Worker)(path_1.default.join(__dirname, 'tailwind-worker.cjs'), workerData:
+          pluginPath: pluginPath
+          files: Object.keys(manifest.files)
+          theme: theme
+          workspace: workspace
+          cacheDir: _this.cacheDir)
+        timer = setTimeout((->
+          reject new Error('CSS build timed out')
+          undefined
+          return
+        ), 30000)
+
+        finish = ->
+          clearTimeout timer
+          undefined
+          return
+
+        worker.once 'message', (message) ->
+          finish()
+          (if message.error then reject(new Error(message.error)) else resolve(message.css))
+          return
+        worker.once 'error', (error) ->
+          finish()
+          reject error
+          return
+        worker.once 'exit', (code) ->
+          clearTimeout timer
+          if code
+            reject new Error('CSS worker exited: '.concat(code))
+          return
+        return
+))
+      await fs_1.promises.writeFile(output, css)
+      await assets_1.precompressAssets.call(undefined, [ output ])
+      name
+    ).catch((error) ->
+      if _this.failedUntil.size >= 512
+        _this.failedUntil.clear()
+      _this.failedUntil.set key, Date.now() + 60000
+      console.warn '[views:css] falling back to browser compiler: '.concat(error.message)
+      null
+    ).finally(->
+      _this.pending.delete key
+    )
+    @pending.set key, work
+    @queue = work
+    work
+
+  TailwindStyles
+).call(undefined)
+exports.TailwindStyles = TailwindStyles

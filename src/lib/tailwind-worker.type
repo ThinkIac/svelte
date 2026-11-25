@@ -1,0 +1,57 @@
+__read = this and @__read or (o, n) ->
+  m = `typeof Symbol == 'function'` and o[Symbol.iterator]
+  if !m
+    return o
+  i = m.call(o)
+  r = undefined
+  ar = []
+  e = undefined
+  try
+    while (`n == void 0` or n-- > 0) and !(r = i.next()).done
+      ar.push r.value
+  catch error
+    e = error: error
+  finally
+    try
+      if r and !r.done and (m = i['return'])
+        m.call i
+    catch __caught
+      throw __caught
+    finally
+      if e
+        throw e.error
+  ar
+# Build-time worker: CSS scanning/optimization must not occupy the HTTP thread.
+_a = require('node:worker_threads')
+parentPort = _a.parentPort
+workerData = _a.workerData
+path = require('node:path')
+(->
+  await undefined if false
+  pluginPath = workerData.pluginPath
+  postcss = require(require.resolve('postcss', paths: [ path.dirname(pluginPath) ]))
+  tailwind = require(pluginPath)
+  cssPath = require.resolve('tailwindcss/index.css', paths: [ path.dirname(pluginPath) ])
+
+  quote = (value) ->
+    JSON.stringify value.replaceAll('\\', '/')
+
+  sources = workerData.files.filter((file) ->
+    !file.includes('/node_modules/') and /\.(svelte|svx|js|ts)$/.test(file)
+  ).map((file) ->
+    '@source '.concat quote(file), ';'
+  ).join('\n')
+  vars = Object.entries(workerData.theme).map((_a) ->
+    _b = __read(_a, 2)
+    key = _b[0]
+    value = _b[1]
+    '--'.concat(key.replace(/^--/, ''), ': ').concat value, ';'
+  ).join('\n')
+  input = '@import '.concat(quote(cssPath), ' source(none);\n').concat(sources, '\n').concat((if vars then '@theme { '.concat(vars, ' }') else ''))
+  result = await(postcss([ tailwind(
+    base: workerData.workspace
+    optimize: true) ]).process(input, from: path.join(workerData.cacheDir, 'tailwind-input.css')))
+  parentPort.postMessage css: result.css
+  return
+).call(undefined).catch (error) ->
+  parentPort.postMessage error: error.message

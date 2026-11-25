@@ -1,0 +1,66 @@
+# The host supplies its HTTP mount, authorization-aware resolver and renderer.
+
+mountPackageViews = (container, pkg, _a) ->
+  _b = undefined
+  _c = undefined
+  _d = undefined
+  getEngine = _a.getEngine
+  getPackageMount = _a.getPackageMount
+  replacePublicViews = _a.replacePublicViews
+  resolveEntryView = _a.resolveEntryView
+  renderPage = _a.renderPage
+  staticAssets = _a.staticAssets
+  if `((_c = (_b = container.config) === null || _b === void 0 ? void 0 : _b.views) === null || _c === void 0 ? void 0 : _c.enabled) == false`
+    return
+  viewsDir = path.join(pkg.dir, 'views')
+  if !fs.existsSync(viewsDir)
+    return
+  replacePublicViews container, pkg.folder, viewsDir
+  engine = getEngine(container)
+  mounted = container.state('views')
+  if !mounted.get('registryBuilt')
+    engine.buildWidgetRegistry container.workspace
+    mounted.set 'registryBuilt', true
+  mount = getPackageMount(container)
+  if !mounted.get('cacheMounted')
+    mount.use '/svelte-cache', compressedAssets(engine.cacheDir), staticAssets(engine.cacheDir, setHeaders: (res, filePath) ->
+      if filePath.endsWith('.mjs')
+        res.setHeader 'Content-Type', 'application/javascript'
+      if versionedAsset(path.basename(filePath))
+        res.setHeader 'Cache-Control', 'public, max-age=31536000, immutable'
+        res.vary 'Accept-Encoding'
+      return
+    )
+    mounted.set 'cacheMounted', true
+  if !mounted.get('route:'.concat(pkg.folder))
+    mount.get '/view/'.concat(pkg.folder), (req, res) ->
+      entry = resolveEntryView(viewsDir, Boolean(req.user))
+      if !entry
+        return res.status(404).send('[views] no entry page found in package "'.concat(pkg.folder, '"'))
+      renderPage container, pkg.folder, entry.page, __assign({}, req.query), res, Boolean(req.user)
+    mount.get '/view/'.concat(pkg.folder, '/:page'), (req, res) ->
+      renderPage container, pkg.folder, req.params.page, __assign({}, req.query), res, Boolean(req.user)
+    mounted.set 'route:'.concat(pkg.folder), true
+    container.log ''.concat((if `(_d = pkg.name) != null` and `_d != void 0` then _d else pkg.folder), ' registered [GET] /view/').concat(pkg.folder, '[/:page] → views/*.svelte')
+  return
+
+'use strict'
+__assign = this and @__assign or ->
+  __assign = Object.assign or (t) ->
+    s = undefined
+    i = 1
+    n = arguments.length
+    while i < n
+      s = arguments[i]
+      for p of s
+        if Object::hasOwnProperty.call(s, p)
+          t[p] = s[p]
+      i++
+    t
+  __assign.apply this, arguments
+fs = require('fs')
+path = require('path')
+_a = require('./assets.cjs')
+compressedAssets = _a.compressedAssets
+versionedAsset = _a.versionedAsset
+module.exports = mountPackageViews: mountPackageViews

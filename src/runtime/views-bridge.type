@@ -1,0 +1,26 @@
+createBridge = (host) ->
+  timing = requireCapabilityDependency('@thinkiac/module-http/performance.cjs', '../../http/performance.cjs')
+  {
+    measurePhase: timing.measurePhase
+    setPerformanceRoute: timing.setPerformanceRoute
+    getHub: ->
+      host.ws.getHub()
+    getPackageMount: ->
+      host.http.getPackageMount()
+    routeMountPath: (pkg, route) ->
+      (if route.startsWith('/') then route else '/'.concat(pkg, '/').concat(route))
+
+  }
+
+requireCapabilityDependency = (name, local) ->
+  entry = undefined
+  try
+    entry = require.resolve(name)
+  catch error
+    if `error.code != 'MODULE_NOT_FOUND'`
+      throw error
+    entry = require.resolve(local)
+  require entry
+
+'use strict'
+module.exports = createBridge: createBridge

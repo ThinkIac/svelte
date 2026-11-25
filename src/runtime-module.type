@@ -1,0 +1,49 @@
+{createBridge} = require './runtime/views-bridge.cjs'
+{createRuntime} = require './runtime/views-runtime.cjs'
+offline = require './runtime/offline.cjs'
+
+facade = (host) ->
+  container = {
+    workspace: host.workspace()
+    config: host.config()
+    state: host.state
+    registry: host.registry
+    log: host.log
+    bus: {on: host.on, emit: host.emit, pipeline: host.pipeline}
+  }
+  # HTTP installs after discovery; resolve its application when it is used.
+  Object.defineProperty container, 'app', {enumerable: true, get: -> host.http.app()}
+  container
+
+provideViews = (host) ->
+  ###
+  @register module views
+  @accepts view
+  @context capability
+  ###
+  legacy = createRuntime createBridge(host)
+  container = facade host
+  {
+    name: 'views'
+    phase: 'wire'
+    requires: ['http']
+    after: ['ws']
+    prepare: -> host.state('views').set 'readiness', await legacy.prewarmViews(container)
+    api: {
+      isRegisteredPublicView: (path) -> legacy.isRegisteredPublicView container, path
+      prewarm: -> legacy.prewarmViews container
+      setGlobalData: (data) -> legacy.setViewsGlobalData container, data
+      getGlobalData: -> legacy.getViewsGlobalData container
+      setTheme: (theme) -> legacy.setViewsTheme container, theme
+      setTailwind: (enabled) -> legacy.setViewsTailwind container, enabled
+      rebuildWidgets: -> legacy.rebuildWidgetRegistry container
+      resolveHotReloadMode: (pkg, query) -> legacy.resolveHotReloadMode container, pkg, query
+    }
+    install: ->
+      legacy.viewsModule.install container
+      host.on 'views:offline_routes', ({pkg, routes}) ->
+        offline.recordOfflineRoutes container, pkg, routes
+      , {priority: 30}
+      return
+  }
+module.exports = {provideViews, createRuntimeModule: provideViews}

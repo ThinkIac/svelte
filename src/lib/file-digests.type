@@ -1,0 +1,71 @@
+'use strict'
+Object.defineProperty exports, '__esModule', value: true
+exports.FileDigests = undefined
+fs_1 = require('fs')
+crypto_1 = require('crypto')
+
+###* Bounded concurrent I/O; ctime detects edits whose mtime was restored. ###
+
+FileDigests = (->
+  `var FileDigests`
+
+  FileDigests = ->
+    @cache = new Map
+    @pending = new Map
+    return
+
+  FileDigests::invalidate = (file) ->
+    @cache.delete file
+    return
+
+  FileDigests::hash = (file) ->
+    _this = this
+    pending = @pending.get(file)
+    if pending
+      return pending
+    work = @read(file).finally(->
+      _this.pending.delete file
+    )
+    @pending.set file, work
+    work
+
+  FileDigests::read = (file) ->
+    await undefined if false
+    try
+      stat = await(fs_1.promises.stat(file, bigint: true))
+      signature = ''.concat(stat.dev, ':').concat(stat.ino, ':').concat(stat.size, ':').concat(stat.mtimeNs, ':').concat(stat.ctimeNs)
+      cached = @cache.get(file)
+      if `(cached === null || cached === void 0 ? void 0 : cached.signature) == signature`
+        return cached.hash
+      data = await(fs_1.promises.readFile(file))
+      hash = crypto_1.createHash.call(undefined, 'md5').update(data).digest('hex')
+      after = await(fs_1.promises.stat(file, bigint: true))
+      if `after.ctimeNs == stat.ctimeNs` and `after.mtimeNs == stat.mtimeNs` and `after.size == stat.size`
+        if @cache.size >= 20000
+          @cache.delete @cache.keys().next().value
+        @cache.set file,
+          signature: signature
+          hash: hash
+      return hash
+    catch _a
+      @cache.delete file
+      return 'gone'
+    return
+
+  FileDigests::graph = (files) ->
+    _this = this
+    await undefined if false
+    result = {}
+    index = 0
+    await Promise.all(Array.from({ length: Math.min(16, files.length) }, ->
+      await undefined if false
+      while index < files.length
+        file = files[index++]
+        result[file] = await(_this.hash(file))
+      return
+    ))
+    result
+
+  FileDigests
+).call(undefined)
+exports.FileDigests = FileDigests

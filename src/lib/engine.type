@@ -1,0 +1,1231 @@
+requireDep = (name) ->
+  try
+    # eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require(name)
+  catch err
+    if `err.code == 'MODULE_NOT_FOUND'`
+      throw new Error('[views] "'.concat(name, '" not installed. Run: npm install svelte esbuild esbuild-svelte'))
+    throw err
+  return
+
+isHotReloadMode = (value) ->
+  `exports.HOT_RELOAD_MODES.indexOf(value) != -1`
+
+###*
+# O cliente de hot-reload injetado em toda página renderizada.
+#
+# Em qualquer modo ele expõe `window.LogosHMR` ({ mode, pending, reload() })
+# e dispara `logos:views-changed` no documento, para que a aplicação possa
+# desenhar a própria UI de "há uma atualização" em vez da barra embutida.
+###
+
+hmrClientScript = (componentName, options) ->
+  '<script>\n(function () {\n  var component = '.concat(JSON.stringify(componentName), ';\n  var mode = ').concat(JSON.stringify(options.mode), ';\n  var badge = ').concat (if options.badge then 'true' else 'false'), ';\n  try {\n    var override = new URLSearchParams(location.search).get(\'hmr\');\n    if (override === \'always\' || override === \'auto\' || override === \'prompt\' || override === \'manual\') mode = override;\n  } catch (_) {}\n\n  var holds = {};\n  var dirty = false;\n  var lastActivity = Date.now();\n  var timer = null;\n  var AUTO_IDLE_MS = 1500;\n  var AUTO_MAX_MS = 5000;\n  var pendingSince = 0;\n  function noteActivity() { lastActivity = Date.now(); if (api.pending) scheduleAutoApply(); }\n  function hasFocusedEditor() {\n    var el = document.activeElement;\n    return !!el && (el.tagName === \'INPUT\' || el.tagName === \'TEXTAREA\' || el.tagName === \'SELECT\' || el.isContentEditable);\n  }\n  function isSafe() {\n    return document.visibilityState === \'visible\' && !dirty && !hasFocusedEditor() && Object.keys(holds).length === 0;\n  }\n  function restoreableState() {\n    return { scrollX: window.scrollX || 0, scrollY: window.scrollY || 0 };\n  }\n  function reload() {\n    try { sessionStorage.setItem(\'__logos_hmr_restore__\', JSON.stringify(restoreableState())); } catch (_) {}\n    location.reload();\n  }\n  var api = {\n    mode: mode, pending: false, changes: [], reload: reload,\n    hold: function (reason) { holds[String(reason || \'anonymous\')] = true; scheduleAutoApply(); },\n    release: function (reason) { delete holds[String(reason || \'anonymous\')]; scheduleAutoApply(); },\n    markDirty: function () { dirty = true; scheduleAutoApply(); },\n    clearDirty: function () { dirty = false; scheduleAutoApply(); },\n    isHeld: function () { return Object.keys(holds).length > 0; },\n  };\n  window.LogosHMR = api;\n\n  try {\n    var saved = JSON.parse(sessionStorage.getItem(\'__logos_hmr_restore__\') || \'null\');\n    sessionStorage.removeItem(\'__logos_hmr_restore__\');\n    if (saved) window.addEventListener(\'load\', function () { window.scrollTo(saved.scrollX || 0, saved.scrollY || 0); }, { once: true });\n  } catch (_) {}\n\n  function reloadIframe() {\n    // Uma view dentro de iframe é uma fronteira natural: só ela perde estado.\n    if (!isEmbedded()) return false;\n    try { window.location.reload(); return true; } catch (_) { return false; }\n  }\n  function scheduleAutoApply() {\n    if (mode !== \'auto\' || !api.pending) return;\n    if (timer) clearTimeout(timer);\n    var elapsed = Date.now() - pendingSince;\n    var wait = Math.max(0, Math.min(AUTO_IDLE_MS, AUTO_MAX_MS - elapsed));\n    timer = setTimeout(function attempt() {\n      if (!api.pending) return;\n      if (reloadIframe()) return;\n      if (isSafe() && (Date.now() - lastActivity >= AUTO_IDLE_MS || Date.now() - pendingSince >= AUTO_MAX_MS)) reload();\n      else scheduleAutoApply();\n    }, wait || 50);\n  }\n  [\'pointerdown\', \'keydown\', \'input\', \'focusin\', \'change\'].forEach(function (event) { document.addEventListener(event, noteActivity, true); });\n  document.addEventListener(\'visibilitychange\', scheduleAutoApply);\n\n  function isEmbedded() {\n    // Dentro de iframe o badge fica por conta da página top-level — que\n    // também recebe este script — para a atualização aparecer uma vez só.\n    try { return window.self !== window.top; } catch (_) { return true; }\n  }\n\n  function showBadge() {\n    if (!badge || isEmbedded() || document.getElementById(\'logos-hmr-badge\')) return;\n    var el = document.createElement(\'button\');\n    el.id = \'logos-hmr-badge\';\n    el.type = \'button\';\n    el.textContent = \'\\u21bb Update available\';\n    el.setAttribute(\'style\', [\n      \'position:fixed\', \'right:16px\', \'bottom:16px\', \'z-index:2147483647\',\n      \'padding:10px 16px\', \'border:0\', \'border-radius:999px\',\n      \'font:600 13px/1 system-ui,sans-serif\', \'color:#fff\', \'background:#2563eb\',\n      \'box-shadow:0 4px 16px rgba(0,0,0,.28)\', \'cursor:pointer\',\n    ].join(\';\'));\n    el.onclick = function () { api.reload(); };\n    (document.body || document.documentElement).appendChild(el);\n  }\n\n  function onChanged(msg) {\n    api.pending = true;\n    pendingSince = pendingSince || Date.now();\n    if (msg && msg.files) api.changes = api.changes.concat(msg.files);\n    try {\n      document.dispatchEvent(new CustomEvent(\'logos:views-changed\', {\n        detail: { component: component, mode: mode, pkg: msg && msg.pkg, files: (msg && msg.files) || [] },\n      }));\n    } catch (_) {}\n    if (mode === \'always\') return api.reload();\n    if (mode === \'auto\') return scheduleAutoApply();\n    if (mode === \'prompt\') showBadge();\n  }\n\n  function connect() {\n    var proto = location.protocol === \'https:\' ? \'wss://\' : \'ws://\';\n    var ws = new WebSocket(proto + location.host + \'/ws?session=views-hmr\');\n    ws.onmessage = function (e) {\n      try {\n        var msg = JSON.parse(e.data);\n        if (msg.type === \'views:hmr\' &&\n            (msg.all || (msg.components || []).indexOf(component) !== -1)) {\n          onChanged(msg);\n        }\n      } catch (_) {}\n    };\n    ws.onclose = function () {\n      // Sem rede não adianta reabrir de 1,5 em 1,5 segundo: era reconexão\n      // infinita queimando bateria exatamente no cenário offline. Espera o\n      // evento \'online\' em vez de insistir no vazio.\n      if (navigator.onLine === false) {\n        window.addEventListener(\'online\', function once() {\n          window.removeEventListener(\'online\', once);\n          connect();\n        });\n        return;\n      }\n      setTimeout(connect, 1500);\n    };\n  }\n  connect();\n})();\n</script>'
+
+###*
+# Browser contract for optional file-picker providers.
+#
+# Lógos never imports a package-specific picker. Instead every native file
+# input announces a cancellable request. An installed provider may cancel it
+# and populate the original input; without a provider the browser's picker is
+# left completely untouched. File Manager is one such provider.
+###
+
+filePickerProtocolClientScript = ->
+  '<script>\n(function () {\n  if (window.LogosFilePicker) return;\n  var EVENT = \'logos:file-picker:request\';\n  function isFileInput(node) {\n    return node && node.nodeType === 1 && node.tagName === \'INPUT\' &&\n      String(node.type || \'\').toLowerCase() === \'file\';\n  }\n  function request(input, trigger) {\n    if (!isFileInput(input) || input.disabled || input.readOnly ||\n        input.hasAttribute(\'data-logos-native-file-picker\')) return false;\n    var detail = {\n      input: input,\n      accept: input.accept || \'\',\n      multiple: !!input.multiple,\n      root: input.getAttribute(\'data-logos-file-root\') || undefined,\n      trigger: trigger || \'api\',\n    };\n    var event = new CustomEvent(EVENT, { bubbles: true, cancelable: true, detail: detail });\n    input.dispatchEvent(event);\n    return event.defaultPrevented;\n  }\n  window.LogosFilePicker = { event: EVENT, request: request };\n  document.addEventListener(\'click\', function (event) {\n    var input = event.target;\n    if (!isFileInput(input)) return;\n    if (request(input, \'click\')) event.preventDefault();\n  }, true);\n})();\n</script>'
+
+'use strict'
+__assign = this and @__assign or ->
+  __assign = Object.assign or (t) ->
+    s = undefined
+    i = 1
+    n = arguments.length
+    while i < n
+      s = arguments[i]
+      for p of s
+        if Object::hasOwnProperty.call(s, p)
+          t[p] = s[p]
+      i++
+    t
+  __assign.apply this, arguments
+__read = this and @__read or (o, n) ->
+  m = `typeof Symbol == 'function'` and o[Symbol.iterator]
+  if !m
+    return o
+  i = m.call(o)
+  r = undefined
+  ar = []
+  e = undefined
+  try
+    while (`n == void 0` or n-- > 0) and !(r = i.next()).done
+      ar.push r.value
+  catch error
+    e = error: error
+  finally
+    try
+      if r and !r.done and (m = i['return'])
+        m.call i
+    catch __caught
+      throw __caught
+    finally
+      if e
+        throw e.error
+  ar
+__values = this and @__values or (o) ->
+  s = `typeof Symbol == 'function'` and Symbol.iterator
+  m = s and o[s]
+  i = 0
+  if m
+    return m.call(o)
+  if o and `typeof o.length == 'number'`
+    return { next: ->
+      if o and i >= o.length
+        o = undefined
+      {
+        value: o and o[i++]
+        done: !o
+      }
+ }
+  throw new TypeError((if s then 'Object is not iterable.' else 'Symbol.iterator is not defined.'))
+  return
+__spreadArray = this and @__spreadArray or (to, from, pack) ->
+  if pack or `arguments.length == 2`
+    i = 0
+    l = from.length
+    ar = undefined
+    while i < l
+      if ar or !(i of from)
+        if !ar
+          ar = Array::slice.call(from, 0, i)
+        ar[i] = from[i]
+      i++
+  to.concat ar or Array::slice.call(from)
+__importDefault = this and @__importDefault or (mod) ->
+  (if mod and mod.__esModule then mod else 'default': mod)
+Object.defineProperty exports, '__esModule', value: true
+exports.SvelteEngine = exports.HOT_RELOAD_MODES = undefined
+exports.isHotReloadMode = isHotReloadMode
+exports.hmrClientScript = hmrClientScript
+exports.filePickerProtocolClientScript = filePickerProtocolClientScript
+tailwind_styles_1 = require('./tailwind-styles.cjs')
+assets_1 = require('./assets.cjs')
+file_digests_1 = require('./file-digests.cjs')
+# modules/views/engine.ts — Svelte SSR + hydration engine, v3.
+#
+# v3 changes over v2: bundler swapped from Rollup to esbuild. Cold builds
+# (first request for a page after a source change) dropped ~11x in
+# benchmarks against a real tenant workspace (45 pages: 195.8s -> 16.4s
+# total) — esbuild's native, Go-parallel resolution of node_modules/CJS
+# interop is what Rollup's plugin chain (node-resolve + commonjs) paid for
+# on every cold build. See packages/logos/spike-esbuild/REPORT.md (git
+# history) for the full writeup, including a real esbuild/CJS-interop bug
+# found and fixed along the way (a first-party CommonJS `.js` file bundled
+# directly — not from node_modules — had its `module.exports=` hoisted to
+# the top of the bundle by esbuild, clobbering the component's export; fix
+# is to author first-party `views/*.js` helpers as ES modules).
+#
+# v2 changes over v1:
+#   * NO global Module.prototype.require monkey-patch. Svelte 4 pinning is
+#     done entirely inside the bundle graph via an esbuild resolve plugin —
+#     the rest of the process is free to use any Svelte it wants.
+#   * The build cache is keyed to the WHOLE import graph. After each build we
+#     persist the graph's file hashes in a manifest; a change in ANY
+#     imported component invalidates the page (fixes the v1 bug where editing
+#     a component under Home never showed up).
+#   * Theme layer: Bootstrap 5 (CDN, opt-out) and/or Tailwind CSS v4 (CDN,
+#     opt-in) + CSS variables from bootstrap({ views: { theme } }) — mutable
+#     at runtime via setViewsTheme() / setViewsTailwind().
+#   * HMR client: every rendered page opens a WS to /ws and reloads when the
+#     runtime broadcasts { type: 'views:hmr' } for one of its source files.
+#
+# Tailwind support: rather than a build step, we use the official browser
+# runtime build (`@tailwindcss/browser`) — the CDN successor to the old
+# "Play CDN". It scans the rendered HTML for utility classes and compiles
+# them client-side. The same `views.theme` map that feeds the Bootstrap
+# `:root` variables is reused: when Tailwind is on, those variables are
+# emitted inside a Tailwind v4 `@theme { ... }` block instead, so they also
+# generate real utilities (e.g. `--color-primary` → `bg-primary`,
+# `text-primary`, `border-primary`), not just custom properties.
+'use strict'
+fs_1 = __importDefault(require('fs'))
+path_1 = __importDefault(require('path'))
+crypto_1 = __importDefault(require('crypto'))
+utils_1 = ensureDir: (dir) ->
+  fs_1.default.mkdirSync dir, recursive: true
+CACHE_DIR = path_1.default.join(process.cwd(), '.svelte-cache')
+VIEW_MANIFEST_FORMAT = 4
+TAILWIND_CDN_URL = 'https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4'
+exports.HOT_RELOAD_MODES = [
+  'always'
+  'auto'
+  'prompt'
+  'manual'
+]
+SvelteEngine = (->
+  `var SvelteEngine`
+
+  ###* Adquire um slot de build; resolve quando houver vaga (limite = vCPUs). ###
+
+  SvelteEngine = (cacheDir, validationIntervalMs) ->
+    if `cacheDir == void 0`
+      cacheDir = CACHE_DIR
+    if `validationIntervalMs == void 0`
+      validationIntervalMs = 0
+    @widgetIndex = {}
+    @theme = {}
+    @bootstrap5 = true
+    @tailwind = false
+    @precompileCss = false
+    @digests = new (file_digests_1.FileDigests)
+    @graphChecks = new Map
+    # Builds em voo, por componentName: N requests simultâneos a uma página
+    # fria compartilham UM build (esbuild SSR+DOM) em vez de dispararem N em
+    # paralelo e saturarem CPU/RAM de um box pequeno (thundering herd).
+    @inflight = new Map
+    # Módulos SSR já carregados, por caminho do bundle. O nome do arquivo é
+    # content-hash, então o caminho identifica o conteúdo unicamente: um
+    # rebuild gera outro caminho e nunca colide. Evita reler/recompilar o
+    # módulo do disco a cada render (antes: delete require.cache + require).
+    @ssrModuleCache = new Map
+    # Uma compilação que falhou na validação não deve derrubar a última versão
+    # publicada em cada novo request. O próximo save limpa essa marca e tenta a
+    # nova candidata de novo.
+    @failedComponents = new Set
+    @buildQueue = []
+    # Validações HMR são promovidas em lote. Um render do mesmo componente
+    # aguarda a decisão do lote; componentes alheios continuam livres.
+    @validationQueue = Promise.resolve()
+    @validationGates = new Map
+    @validationIntervalMs = validationIntervalMs
+    @cacheDir = cacheDir
+    @tailwindStyles = new (tailwind_styles_1.TailwindStyles)(cacheDir)
+    utils_1.ensureDir.call undefined, @cacheDir
+    @widgetRegistryPath = path_1.default.join(@cacheDir, 'WidgetRegistry.svelte')
+    @widgetComponentPath = path_1.default.join(@cacheDir, 'Widget.svelte')
+    @optionalStubPath = path_1.default.join(@cacheDir, 'OptionalMissing.svelte')
+    # O runtime pode ser iniciado de outro diretório (por exemplo, a própria
+    # pasta do pacote durante os testes). Resolva o Svelte instalado, em vez
+    # de assumir que ele está em `cwd/node_modules`.
+    @svelteDir = path_1.default.dirname(require.resolve('svelte/package.json'))
+    cpus = 1
+    try
+      cpus = require('os').cpus().length or 1
+    catch _a
+
+      ### keep 1 ###
+
+    # Reserve capacity for interactive HTTP; hosts can explicitly raise this limit.
+    @buildSlots = Math.max(1, Math.min(cpus, Number(process.env.LOGOS_VIEW_BUILD_CONCURRENCY) or 2))
+    return
+
+  SvelteEngine::acquireBuildSlot = ->
+    _this = this
+    if @buildSlots > 0
+      @buildSlots--
+      return Promise.resolve()
+    new Promise((resolve) ->
+      _this.buildQueue.push resolve
+)
+
+  SvelteEngine::releaseBuildSlot = ->
+    next = @buildQueue.shift()
+    if next
+      next()
+    else
+      @buildSlots++
+    return
+
+  SvelteEngine::setTheme = (theme, bootstrap5) ->
+    @theme = (if theme and `typeof theme == 'object'` then theme else {})
+    if `bootstrap5 != undefined`
+      @bootstrap5 = bootstrap5
+    return
+
+  SvelteEngine::getTheme = ->
+    __assign {}, @theme
+
+  SvelteEngine::setTailwind = (enabled, precompileCss) ->
+    if `precompileCss == void 0`
+      precompileCss = @precompileCss
+    @tailwind = Boolean(enabled)
+    @precompileCss = precompileCss
+    return
+
+  SvelteEngine::getTailwind = ->
+    @tailwind
+
+  SvelteEngine::hash = (content) ->
+    crypto_1.default.createHash('md5').update(content).digest 'hex'
+
+  # ── Import-graph manifest ─────────────────────────────────────────────────
+  #
+  # <component>.manifest.json = { hash, files: { absPath: contentHash } }
+  # Valid while every file in the last build's graph still hashes the same.
+
+  SvelteEngine::manifestPath = (componentName) ->
+    path_1.default.join @cacheDir, ''.concat(componentName, '.manifest.json')
+
+  SvelteEngine::fileHash = (file) ->
+    try
+      return @hash(fs_1.default.readFileSync(file, 'utf-8'))
+    catch _a
+      return 'gone'
+    return
+
+  SvelteEngine::readManifest = (componentName) ->
+    try
+      return JSON.parse(fs_1.default.readFileSync(@manifestPath(componentName), 'utf-8'))
+    catch _a
+      return null
+    return
+
+  SvelteEngine::manifestValid = (manifest) ->
+    _this = this
+    await undefined if false
+    if !(if `manifest == null` or `manifest == void 0` then undefined else manifest.files) or `manifest.format != VIEW_MANIFEST_FORMAT`
+      return false
+    key = manifest.hash
+    cached = @graphChecks.get(key)
+    if (if `cached == null` or `cached == void 0` then undefined else cached.pending)
+      return cached.pending
+    if cached and cached.until > Date.now()
+      return cached.valid
+    entry =
+      until: 0
+      valid: false
+      pending: `undefined`
+    pending = @digests.graph(Object.keys(manifest.files)).then((hashes) ->
+      valid = Object.entries(manifest.files).every((_a) ->
+        _b = __read(_a, 2)
+        file = _b[0]
+        hash = _b[1]
+        `hashes[file] == hash`
+      )
+      entry.valid = valid
+      entry.until = Date.now() + _this.validationIntervalMs
+      valid
+    ).finally(->
+      entry.pending = `undefined`
+      return
+    )
+    entry.pending = pending
+    if @graphChecks.size > 512
+      @graphChecks.clear()
+    @graphChecks.set key, entry
+    pending
+
+  ###* Returns component names whose graphs include `changedFile` (for HMR). ###
+
+  SvelteEngine::affectedComponents = (changedFile) ->
+    e_1 = undefined
+    _a = undefined
+    @digests.invalidate changedFile
+    @graphChecks.clear()
+    hits = []
+    if !fs_1.default.existsSync(@cacheDir)
+      return hits
+    try
+      _b = __values(fs_1.default.readdirSync(@cacheDir))
+      _c = _b.next()
+      while !_c.done
+        entry = _c.value
+        if !entry.endsWith('.manifest.json')
+          _c = _b.next()
+          continue
+        try
+          manifest = JSON.parse(fs_1.default.readFileSync(path_1.default.join(@cacheDir, entry), 'utf-8'))
+          if manifest.files and `manifest.files[changedFile] != undefined`
+            hits.push entry.replace('.manifest.json', '')
+        catch _d
+
+          ### skip broken manifest ###
+
+        _c = _b.next()
+    catch e_1_1
+      e_1 = error: e_1_1
+    finally
+      try
+        if _c and !_c.done and (_a = _b.return)
+          _a.call _b
+      catch __caught
+        throw __caught
+      finally
+        if e_1
+          throw e_1.error
+    hits
+
+  # ── Widget registry (unchanged behaviour, collision-safe) ────────────────
+
+  SvelteEngine::buildWidgetRegistry = (workspace) ->
+    `var widgetName`
+    e_2 = undefined
+    _a = undefined
+    e_3 = undefined
+    _b = undefined
+    e_4 = undefined
+    _c = undefined
+    @widgetIndex = {}
+    imports = []
+    mappings = []
+    nameCollisions = {}
+    if fs_1.default.existsSync(workspace)
+      try
+        _d = __values(fs_1.default.readdirSync(workspace))
+        _e = _d.next()
+        while !_e.done
+          pkg = _e.value
+          pkgPath = path_1.default.join(workspace, pkg)
+          try
+            if !fs_1.default.statSync(pkgPath).isDirectory()
+              _e = _d.next()
+              continue
+          catch _f
+            _e = _d.next()
+            continue
+          viewsDir = path_1.default.join(pkgPath, 'views')
+          if !fs_1.default.existsSync(viewsDir)
+            _e = _d.next()
+            continue
+          viewEntries = undefined
+          try
+            viewEntries = fs_1.default.readdirSync(viewsDir)
+          catch _g
+            _e = _d.next()
+            continue
+          widgetsDirName = viewEntries.find((d) ->
+            `d.toLowerCase() == 'widgets'`
+          )
+          if !widgetsDirName
+            _e = _d.next()
+            continue
+          widgetsDir = path_1.default.join(viewsDir, widgetsDirName)
+          try
+            if !fs_1.default.statSync(widgetsDir).isDirectory()
+              _e = _d.next()
+              continue
+          catch _h
+            _e = _d.next()
+            continue
+          widgetFiles = undefined
+          try
+            widgetFiles = fs_1.default.readdirSync(widgetsDir)
+          catch _j
+            _e = _d.next()
+            continue
+          try
+            e_3 = undefined
+            widgetFiles_1 = __values(widgetFiles)
+            widgetFiles_1_1 = widgetFiles_1.next()
+            while !widgetFiles_1_1.done
+              file = widgetFiles_1_1.value
+              if !file.endsWith('.svelte') and !file.endsWith('.svx')
+                widgetFiles_1_1 = widgetFiles_1.next()
+                continue
+              sourcePath = path_1.default.join(widgetsDir, file)
+              # A remoção pode ocorrer durante esta varredura. Nunca grave um
+              # import para algo que já não existe: a próxima reconstrução parte
+              # do disco e fica saudável por si só.
+              try
+                if !fs_1.default.statSync(sourcePath).isFile()
+                  widgetFiles_1_1 = widgetFiles_1.next()
+                  continue
+              catch _k
+                widgetFiles_1_1 = widgetFiles_1.next()
+                continue
+              widgetName = file.replace(/\.(svelte|svx)$/, '')
+              qualifiedName = ''.concat(pkg, '__').concat(widgetName)
+              importName = 'Widget_'.concat(qualifiedName).replace(/[^a-zA-Z0-9]/g, '_')
+              safePath = sourcePath.replace(/\\/g, '/')
+              imports.push 'import '.concat(importName, ' from \'').concat(safePath, '\';')
+              mappings.push '\''.concat(qualifiedName, '\': ').concat(importName)
+              (nameCollisions[widgetName] or (nameCollisions[widgetName] = [])).push
+                pkg: pkg
+                importName: importName
+                qualifiedName: qualifiedName
+              @widgetIndex[qualifiedName] =
+                pkg: pkg
+                widgetName: widgetName
+                importName: importName
+              widgetFiles_1_1 = widgetFiles_1.next()
+          catch e_3_1
+            e_3 = error: e_3_1
+          finally
+            try
+              if widgetFiles_1_1 and !widgetFiles_1_1.done and (_b = widgetFiles_1.return)
+                _b.call widgetFiles_1
+            catch __caught
+              throw __caught
+            finally
+              if e_3
+                throw e_3.error
+          _e = _d.next()
+      catch e_2_1
+        e_2 = error: e_2_1
+      finally
+        try
+          if _e and !_e.done and (_a = _d.return)
+            _a.call _d
+        catch __caught
+          throw __caught
+        finally
+          if e_2
+            throw e_2.error
+    simpleAliases = []
+    try
+      _l = __values(Object.entries(nameCollisions))
+      _m = _l.next()
+      while !_m.done
+        _o = __read(_m.value, 2)
+        widgetName = _o[0]
+        owners = _o[1]
+        if `owners.length == 1`
+          simpleAliases.push '\''.concat(widgetName, '\': ').concat(owners[0].importName)
+          @widgetIndex[widgetName] = @widgetIndex[owners[0].qualifiedName]
+        else
+          console.warn '[views] widget name collision: "'.concat(widgetName, '" in [').concat(owners.map((o) ->
+            o.pkg
+          ).join(', '), ']. ') + 'Use the qualified name (e.g. "'.concat(owners[0].qualifiedName, '").')
+        _m = _l.next()
+    catch e_4_1
+      e_4 = error: e_4_1
+    finally
+      try
+        if _m and !_m.done and (_c = _l.return)
+          _c.call _l
+      catch __caught
+        throw __caught
+      finally
+        if e_4
+          throw e_4.error
+
+    registryBody = (extraMsg) ->
+      '<script>\n  '.concat(imports.join('\n  '), '\n  const registry = { ').concat(__spreadArray(__spreadArray([], __read(mappings), false), __read(simpleAliases), false).join(', '), ' };\n  export let name = \'\';\n  export let filter = \'\';\n  export let max = null;\n  $: limit = max ? parseInt(max, 10) : undefined;\n  $: widgetKeys = Object.keys(registry)\n    .filter(k => { if (k.includes(\'__\')) return false; return filter ? k.toLowerCase().includes(filter.toLowerCase()) : true; })\n    .slice(0, limit);\n</script>\n{#if name}\n  {#if registry[name]}\n    <svelte:component this={registry[name]} {...$$restProps} />\n  {:else}\n    <div style="color:red;border:1px dashed red;padding:.5rem;font-family:monospace;font-size:12px;">\n      [views] Widget "{name}" not found. ').concat extraMsg, '\n    </div>\n  {/if}\n{:else if filter || max}\n  {#each widgetKeys as widgetKey}\n    <svelte:component this={registry[widgetKey]} {...$$restProps} />\n  {/each}\n{:else}\n  <div style="color:orange;border:1px dashed orange;padding:.5rem;font-family:monospace;font-size:12px;">\n    [views] &lt;Widget&gt; needs <code>name</code>, <code>filter</code> or <code>max</code>.\n  </div>\n{/if}'
+
+    fs_1.default.writeFileSync @widgetRegistryPath, registryBody('Try the qualified name (pkg__Widget).')
+    fs_1.default.writeFileSync @widgetComponentPath, registryBody('Check available widget names.')
+    # Substituto de uma view de outro pacote que não está instalado. Renderiza
+    # nada de propósito: o recurso some da tela, em vez de derrubar a página.
+    fs_1.default.writeFileSync @optionalStubPath, '<!-- pacote opcional ausente -->\n'
+    return
+
+  SvelteEngine::getWidgetIndex = ->
+    __assign {}, @widgetIndex
+
+  # ── Build ─────────────────────────────────────────────────────────────────
+
+  ###*
+  # MDSvex preprocessor for `.svx` pages (Markdown + Svelte). Its `markup()`
+  # hook no-ops (returns undefined) for files that don't match its configured
+  # extension (default `.svx`), so chaining it ahead of the widget-injector
+  # preprocessor is safe for plain `.svelte` pages too. Lazily constructed so
+  # projects that never use `.svx` never pay for requiring it.
+  ###
+
+  SvelteEngine::mdsvexPreprocess = ->
+    preprocessor = undefined
+    { markup: (input) ->
+      _a = undefined
+      await undefined if false
+      if !(if `(_a = input.filename) == null` or `_a == void 0` then undefined else _a.endsWith('.svx'))
+        return `undefined`
+      if !preprocessor
+        try
+          # TypeScript compiles import() to require() in CommonJS mode. Use
+          # the native loader explicitly so ESM-only mdsvex releases work
+          # while Lógos keeps its public CommonJS contract.
+          nativeImport = new Function('specifier', 'return import(specifier)')
+          mod = await(nativeImport('mdsvex'))
+          preprocessor = mod.mdsvex()
+        catch err
+          if `err.code != 'ERR_MODULE_NOT_FOUND'` and `err.code != 'MODULE_NOT_FOUND'`
+            throw err
+          throw new Error('[views] "mdsvex" not installed. Run: npm install mdsvex')
+      preprocessor.markup input
+ }
+
+  SvelteEngine::preprocess = ->
+    registryPath = @widgetRegistryPath
+    importId = '\'svelte-view-engine:registry\''
+    importStmt = 'import Widget from '.concat(importId, ';')
+    { markup: (_a) ->
+      content = _a.content
+      filename = _a.filename
+      if `filename == registryPath`
+        return { code: content }
+      if !content.includes('<Widget')
+        return { code: content }
+      if content.includes(importId)
+        return { code: content }
+      scriptMatch = content.match(/<script([^>]*)>/)
+      if scriptMatch
+        return { code: content.replace(scriptMatch[0], ''.concat(scriptMatch[0], '\n  ').concat(importStmt)) }
+      { code: '<script>\n  '.concat(importStmt, '\n</script>\n').concat(content) }
+ }
+
+  # esbuild's onResolve doesn't do Node-style directory-to-index.js
+  # resolution on a path we hand it directly, so a subpath that lands on a
+  # directory (e.g. modern-layout `svelte/internal`) needs the same
+  # treatment require.resolve() would give it.
+
+  SvelteEngine::resolveSvelteRuntimeSubpath = (runtimeDir, subpath) ->
+    candidate = path_1.default.join(runtimeDir, subpath)
+    if fs_1.default.existsSync(candidate) and fs_1.default.statSync(candidate).isDirectory()
+      candidate = path_1.default.join(candidate, 'index.js')
+    else if !fs_1.default.existsSync(candidate) and fs_1.default.existsSync(''.concat(candidate, '.js'))
+      candidate += '.js'
+    candidate
+
+  SvelteEngine::plugins = (isSSR, workspace) ->
+    _this = this
+    esbuildSvelte = requireDep('esbuild-svelte')
+    pkgRoot = @svelteDir.replace(/\\/g, '/')
+    # Svelte 3 shipped runtime subpaths (internal/, store/, ...) as physical
+    # top-level folders. Svelte 4 moved them under src/runtime/ and only
+    # exposes them via package.json "exports" — which this naive path-join
+    # alias doesn't consult. Detect the layout instead of assuming v3.
+    isModernLayout = !fs_1.default.existsSync(path_1.default.join(@svelteDir, 'internal'))
+    runtimeDir = ''.concat(pkgRoot, '/src')
+    exportsMap = require(path_1.default.join(pkgRoot, 'package.json')).exports
+    bareEntry = (if isModernLayout then ''.concat(runtimeDir, '/').concat((if isSSR then 'ssr.js' else 'index.js')) else pkgRoot)
+    aliasPlugin =
+      name: 'view-engine-aliases'
+      setup: (build) ->
+        build.onResolve { filter: /^svelte-view-engine:registry$/ }, ->
+          { path: _this.widgetRegistryPath }
+        build.onResolve { filter: /^@packages\// }, (args) ->
+          { path: path_1.default.join(workspace, args.path.slice('@packages/'.length)) }
+        # Svelte 4 pinning — contained in the bundle graph, no global patch.
+        # Views de OUTRO pacote (../../<pkg>/...) são opcionais: cada tenant
+        # instala um conjunto próprio de pacotes, e o que está no repositório
+        # não é o que está na imagem. Sem isto, um import para um pacote
+        # ausente derruba o build da view inteira —
+        # "Could not resolve ../../file-manager/views/FilePicker.svelte" — e a
+        # tela não abre, embora o recurso faltante seja acessório.
+        #
+        # Só age quando o arquivo realmente não existe: com o pacote presente,
+        # a resolução é a normal e nada muda.
+        build.onResolve { filter: /^\.\.\/\.\.\/[^/]+\/.*\.svelte$/ }, (args) ->
+          alvo = path_1.default.resolve(args.resolveDir, args.path)
+          if fs_1.default.existsSync(alvo)
+            return null
+          console.warn '[views] pacote opcional ausente, seguindo sem ele: '.concat(args.path)
+          { path: _this.optionalStubPath }
+        build.onResolve { filter: /^svelte(?:\/.*)?$/ }, (args) ->
+          key = (if `args.path == 'svelte'` then '.' else './' + args.path.slice(7))
+          entry = exportsMap[key]
+          target = (if `typeof entry == 'string'` then entry else entry and (!isSSR and entry.browser or entry.default))
+          if !target
+            throw new Error('Unsupported Svelte export: ' + key)
+          { path: path_1.default.join(pkgRoot, target) }
+        return
+    [
+      aliasPlugin
+      esbuildSvelte(
+        compilerOptions:
+          generate: (if isSSR then 'server' else 'client')
+          css: (if isSSR then 'external' else 'injected')
+          compatibility: componentApi: 4
+        preprocess: [
+          @mdsvexPreprocess()
+          @preprocess()
+        ])
+    ]
+
+  SvelteEngine::build = (sourcePath, componentName, hash, isSSR, workspace) ->
+    await undefined if false
+    esbuild = requireDep('esbuild')
+    ext = (if isSSR then 'cjs' else 'mjs')
+    outPath = path_1.default.join(@cacheDir, ''.concat(componentName, '.').concat((if isSSR then 'SSR' else 'DOM'), '.').concat(hash, '.').concat(ext))
+    if fs_1.default.existsSync(outPath)
+      return {
+        outPath: outPath
+        watchFiles: null
+      }
+    result = await(esbuild.build(__assign(__assign(__assign(__assign({
+      stdin:
+        contents: (if isSSR then 'import Component from '.concat(JSON.stringify(sourcePath), '; import { render } from \'svelte/server\'; export default { render(props) { const result = render(Component, { props }); return { html: result.body, head: result.head, css: { code: \'\' } }; } };') else 'import Component from '.concat(JSON.stringify(sourcePath), '; import { createClassComponent } from \'svelte/legacy\'; export default class LegacyComponent { constructor(options) { return createClassComponent({ component: Component, ...options }); } }'))
+        resolveDir: @cacheDir
+        sourcefile: 'svelte-entry.js'
+        loader: 'js'
+      bundle: true
+    }, (if isSSR then outfile: outPath else
+      outdir: @cacheDir
+      entryNames: path_1.default.basename(outPath, '.mjs')
+      outExtension: '.js': '.mjs'
+      chunkNames: ''.concat(componentName, '.').concat(hash, '.chunk.[hash]')
+      splitting: true
+      minify: true)), format: (if isSSR then 'cjs' else 'esm')), (if isSSR then {} else banner: js: 'export {};')),
+      platform: (if isSSR then 'node' else 'browser')
+      conditions: (if isSSR then [
+        'svelte'
+        'node'
+      ] else [
+        'svelte'
+        'browser'
+      ])
+      mainFields: [
+        'svelte'
+        'browser'
+        'module'
+        'main'
+      ]
+      metafile: true
+      write: true
+      legalComments: 'none'
+      sourcemap: false
+      logLevel: 'silent'
+      plugins: @plugins(isSSR, workspace))))
+    if !isSSR and result.metafile
+      await assets_1.precompressAssets.call(undefined, Object.keys(result.metafile.outputs).map((file) ->
+        path_1.default.resolve file
+      ))
+    watchFiles = (if result.metafile then Object.keys(result.metafile.inputs).map(((f) ->
+      path_1.default.resolve f
+    )) else [])
+    {
+      outPath: outPath
+      watchFiles: watchFiles
+    }
+
+  SvelteEngine::evictOldBuilds = (componentName, keepHash) ->
+    e_5 = undefined
+    _a = undefined
+    try
+      _b = __values(fs_1.default.readdirSync(@cacheDir))
+      _c = _b.next()
+      while !_c.done
+        entry = _c.value
+        if entry.startsWith(''.concat(componentName, '.')) and !entry.includes(keepHash) and !entry.includes('.chunk.') and /\.(cjs|mjs)$/.test(entry)
+          full = path_1.default.join(@cacheDir, entry)
+          @ssrModuleCache.delete full
+          try
+            fs_1.default.unlinkSync full
+          catch _d
+
+            ### ok ###
+
+        _c = _b.next()
+    catch e_5_1
+      e_5 = error: e_5_1
+    finally
+      try
+        if _c and !_c.done and (_a = _b.return)
+          _a.call _b
+      catch __caught
+        throw __caught
+      finally
+        if e_5
+          throw e_5.error
+    return
+
+  SvelteEngine::ensureBuilt = (sourcePath, componentName, workspace) ->
+    _this = this
+    await undefined if false
+    validation = @validationGates.get(componentName)
+    if validation
+      await validation
+      return @ensureBuilt(sourcePath, componentName, workspace)
+    manifest = @readManifest(componentName)
+    # Fast path: cache válido, sem build — não precisa dedupe nem slot.
+    if manifest and (@failedComponents.has(componentName) or await(@manifestValid(manifest)))
+      ssr = path_1.default.join(@cacheDir, ''.concat(componentName, '.SSR.').concat(manifest.hash, '.cjs'))
+      dom = path_1.default.join(@cacheDir, ''.concat(componentName, '.DOM.').concat(manifest.hash, '.mjs'))
+      if fs_1.default.existsSync(ssr) and fs_1.default.existsSync(dom)
+        return {
+          ssr: ssr
+          dom: dom
+        }
+    # Slow path: dedupe por componentName — um único build compartilhado.
+    existing = @inflight.get(componentName)
+    if existing
+      return existing
+    built = (->
+      await undefined if false
+      await _this.acquireBuildSlot()
+      try
+        try
+          return await(_this.compile(sourcePath, componentName, workspace))
+        catch error
+          # Um registry em cache pode apontar para um widget removido entre a
+          # varredura e o build. Refaça-o a partir do disco e tente somente
+          # mais uma vez. Qualquer erro do widget existente continua subindo
+          # normalmente, sem esconder falhas reais de compilação.
+          if !_this.isMissingWidgetRegistryImport(error)
+            throw error
+          _this.buildWidgetRegistry workspace
+          return await(_this.compile(sourcePath, componentName, workspace))
+      catch __caught
+        throw __caught
+      finally
+        _this.releaseBuildSlot()
+      return
+    ).call(undefined).finally(->
+      _this.inflight.delete componentName
+    )
+    @inflight.set componentName, built
+    built
+
+  SvelteEngine::isMissingWidgetRegistryImport = (error) ->
+    message = (if error instanceof Error then error.message else String(error))
+    /WidgetRegistry\.svelte[\s\S]*(Could not resolve|Could not read|ENOENT)|(?:Could not resolve|Could not read|ENOENT)[\s\S]*WidgetRegistry\.svelte/i.test message
+
+  SvelteEngine::compile = (sourcePath, componentName, workspace, promote) ->
+    if `promote == void 0`
+      promote = true
+    await undefined if false
+    registrySource = (if fs_1.default.existsSync(@widgetRegistryPath) then fs_1.default.readFileSync(@widgetRegistryPath, 'utf-8') else '')
+    source = fs_1.default.readFileSync(sourcePath, 'utf-8')
+    # O widget registry é GLOBAL: dobrá-lo no hash de toda página fazia
+    # instalar/remover um plugin invalidar o cache de TODAS as páginas (o
+    # registry muda) — matando o warm-cache em qualquer tenant com pacotes
+    # fora do padrão. Só páginas que usam <Widget> dependem do registry.
+    usesWidget = source.includes('<Widget')
+    # Content hash seeds the filename; the manifest guards the whole graph.
+    # O source da página não muda quando só um filho importado muda. A
+    # compilação acontece apenas após manifest inválido; um nonce aqui garante
+    # que esbuild não reutilize o bundle do pai com o filho antigo.
+    hash = @hash(source + (if usesWidget then registrySource else '') + crypto_1.default.randomUUID())
+    ssrBuild = await(@build(sourcePath, componentName, hash, true, workspace))
+    domBuild = await(@build(sourcePath, componentName, hash, false, workspace))
+    graphFiles = new Set(__spreadArray(__spreadArray([ sourcePath ], __read(ssrBuild.watchFiles or []), false), __read(domBuild.watchFiles or []), false))
+    # Só páginas com <Widget> ganham o registry no grafo do manifest — assim
+    # uma troca de plugin não invalida (via manifestValid) páginas que nem o
+    # usam.
+    if usesWidget
+      graphFiles.add @widgetRegistryPath
+    files = await(@digests.graph(__spreadArray([], __read(graphFiles), false)))
+    if promote
+      fs_1.default.writeFileSync @manifestPath(componentName), JSON.stringify({
+        format: VIEW_MANIFEST_FORMAT
+        hash: hash
+        files: files
+      }, null, 2)
+      @evictOldBuilds componentName, hash
+    {
+      ssr: ssrBuild.outPath
+      dom: domBuild.outPath
+      hash: hash
+      files: files
+    }
+
+  SvelteEngine::invalidate = (componentName) ->
+    @graphChecks.clear()
+    @failedComponents.delete componentName
+    try
+      fs_1.default.unlinkSync @manifestPath(componentName)
+    catch _a
+
+      ### ok ###
+
+    return
+
+  ###*
+  # Compila e renderiza SSR antes de anunciar uma alteração. Em falha, conserva
+  # o manifest/bundle anterior para que a página aberta continue saudável.
+  ###
+
+  SvelteEngine::validateComponents = (componentNames, workspace) ->
+    _this = this
+    await undefined if false
+    validation = @validationQueue.then((->
+      _this.validateComponentsNow componentNames, workspace
+    ), ->
+      _this.validateComponentsNow componentNames, workspace
+    )
+    @validationQueue = validation.catch(->
+      `undefined`
+    )
+    validation
+
+  SvelteEngine::validateComponentsNow = (componentNames, workspace) ->
+    `var component`
+    `var component`
+    `var component`
+    `var candidate`
+    `var component`
+    `var candidate`
+    `var component`
+    `var candidate`
+    `var component`
+    `var manifest`
+    `var candidates_3`
+    `var candidates_3_1`
+    `var _o`
+    `var component`
+    `var candidate`
+    `var previous_1`
+    `var previous_1_1`
+    `var _r`
+    `var component`
+    `var saved`
+    `var manifest`
+    `var component`
+    e_6 = undefined
+    _a = undefined
+    e_7 = undefined
+    _b = undefined
+    e_8 = undefined
+    _c = undefined
+    e_9 = undefined
+    _d = undefined
+    e_10 = undefined
+    _e = undefined
+    e_11 = undefined
+    _f = undefined
+    e_12 = undefined
+    _g = undefined
+    e_13 = undefined
+    _h = undefined
+    await undefined if false
+    @graphChecks.clear()
+    releaseValidation = undefined
+    gate = new Promise((resolve) ->
+      releaseValidation = resolve
+      return
+)
+    try
+      componentNames_1 = __values(componentNames)
+      componentNames_1_1 = componentNames_1.next()
+      while !componentNames_1_1.done
+        component = componentNames_1_1.value
+        @validationGates.set component, gate
+        componentNames_1_1 = componentNames_1.next()
+    catch e_6_1
+      e_6 = error: e_6_1
+    finally
+      try
+        if componentNames_1_1 and !componentNames_1_1.done and (_a = componentNames_1.return)
+          _a.call componentNames_1
+      catch __caught
+        throw __caught
+      finally
+        if e_6
+          throw e_6.error
+    previous = new Map
+    candidates = new Map
+    try
+      componentNames_2 = __values(componentNames)
+      componentNames_2_1 = componentNames_2.next()
+      while !componentNames_2_1.done
+        component = componentNames_2_1.value
+        manifest = @manifestPath(component)
+        try
+          previous.set component, fs_1.default.readFileSync(manifest, 'utf-8')
+        catch _j
+          previous.set component, null
+        componentNames_2_1 = componentNames_2.next()
+    catch e_7_1
+      e_7 = error: e_7_1
+    finally
+      try
+        if componentNames_2_1 and !componentNames_2_1.done and (_b = componentNames_2.return)
+          _b.call componentNames_2
+      catch __caught
+        throw __caught
+      finally
+        if e_7
+          throw e_7.error
+    try
+      try
+        componentNames_3 = __values(componentNames)
+        componentNames_3_1 = componentNames_3.next()
+        while !componentNames_3_1.done
+          component = componentNames_3_1.value
+          _k = __read(component.split('__'), 2)
+          pkg = _k[0]
+          page = _k[1]
+          svelte = path_1.default.join(workspace, pkg, 'views', ''.concat(page, '.svelte'))
+          svx = path_1.default.join(workspace, pkg, 'views', ''.concat(page, '.svx'))
+          source = (if fs_1.default.existsSync(svelte) then svelte else svx)
+          if !fs_1.default.existsSync(source)
+            componentNames_3_1 = componentNames_3.next()
+            continue
+          await @acquireBuildSlot()
+          candidate = undefined
+          try
+            try
+              candidate = await(@compile(source, component, workspace, false))
+            catch error
+              if !@isMissingWidgetRegistryImport(error)
+                throw error
+              @buildWidgetRegistry workspace
+              candidate = await(@compile(source, component, workspace, false))
+          catch __caught
+            throw __caught
+          finally
+            @releaseBuildSlot()
+          candidates.set component, candidate
+          ssr = candidate.ssr
+          mod = @ssrModuleCache.get(ssr)
+          if !mod
+            mod = require(require.resolve(ssr))
+            @ssrModuleCache.set ssr, mod
+          View = mod.default or mod
+          View.render {}
+          componentNames_3_1 = componentNames_3.next()
+      catch e_8_1
+        e_8 = error: e_8_1
+      finally
+        try
+          if componentNames_3_1 and !componentNames_3_1.done and (_c = componentNames_3.return)
+            _c.call componentNames_3
+        catch __caught
+          throw __caught
+        finally
+          if e_8
+            throw e_8.error
+      try
+        # A fila é uma transação: nenhum candidato fica visível (nem remove o
+        # bundle anterior) antes de todos os componentes compilarem e passarem
+        # pela renderização SSR.
+        candidates_1 = __values(candidates)
+        candidates_1_1 = candidates_1.next()
+        while !candidates_1_1.done
+          _l = __read(candidates_1_1.value, 2)
+          component = _l[0]
+          candidate = _l[1]
+          fs_1.default.writeFileSync @manifestPath(component), JSON.stringify({
+            format: VIEW_MANIFEST_FORMAT
+            hash: candidate.hash
+            files: candidate.files
+          }, null, 2)
+          candidates_1_1 = candidates_1.next()
+      catch e_9_1
+        e_9 = error: e_9_1
+      finally
+        try
+          if candidates_1_1 and !candidates_1_1.done and (_d = candidates_1.return)
+            _d.call candidates_1
+        catch __caught
+          throw __caught
+        finally
+          if e_9
+            throw e_9.error
+      try
+        candidates_2 = __values(candidates)
+        candidates_2_1 = candidates_2.next()
+        while !candidates_2_1.done
+          _m = __read(candidates_2_1.value, 2)
+          component = _m[0]
+          candidate = _m[1]
+          @evictOldBuilds component, candidate.hash
+          @failedComponents.delete component
+          candidates_2_1 = candidates_2.next()
+      catch e_10_1
+        e_10 = error: e_10_1
+      finally
+        try
+          if candidates_2_1 and !candidates_2_1.done and (_e = candidates_2.return)
+            _e.call candidates_2
+        catch __caught
+          throw __caught
+        finally
+          if e_10
+            throw e_10.error
+    catch err
+      try
+        candidates_3 = __values(candidates)
+        candidates_3_1 = candidates_3.next()
+        while !candidates_3_1.done
+          _o = __read(candidates_3_1.value, 2)
+          component = _o[0]
+          candidate = _o[1]
+          @ssrModuleCache.delete candidate.ssr
+          try
+            fs_1.default.unlinkSync candidate.ssr
+          catch _p
+
+            ### ok ###
+
+          try
+            fs_1.default.unlinkSync candidate.dom
+          catch _q
+
+            ### ok ###
+
+          candidates_3_1 = candidates_3.next()
+      catch e_11_1
+        e_11 = error: e_11_1
+      finally
+        try
+          if candidates_3_1 and !candidates_3_1.done and (_f = candidates_3.return)
+            _f.call candidates_3
+        catch __caught
+          throw __caught
+        finally
+          if e_11
+            throw e_11.error
+      try
+        previous_1 = __values(previous)
+        previous_1_1 = previous_1.next()
+        while !previous_1_1.done
+          _r = __read(previous_1_1.value, 2)
+          component = _r[0]
+          saved = _r[1]
+          manifest = @manifestPath(component)
+          if `saved == null`
+            try
+              fs_1.default.unlinkSync manifest
+            catch _s
+
+              ### ok ###
+
+          else
+            fs_1.default.writeFileSync manifest, saved
+            @failedComponents.add component
+          previous_1_1 = previous_1.next()
+      catch e_12_1
+        e_12 = error: e_12_1
+      finally
+        try
+          if previous_1_1 and !previous_1_1.done and (_g = previous_1.return)
+            _g.call previous_1
+        catch __caught
+          throw __caught
+        finally
+          if e_12
+            throw e_12.error
+      throw err
+    finally
+      try
+        componentNames_4 = __values(componentNames)
+        componentNames_4_1 = componentNames_4.next()
+        while !componentNames_4_1.done
+          component = componentNames_4_1.value
+          if `this.validationGates.get(component) == gate`
+            @validationGates.delete component
+          componentNames_4_1 = componentNames_4.next()
+      catch e_13_1
+        e_13 = error: e_13_1
+      finally
+        try
+          if componentNames_4_1 and !componentNames_4_1.done and (_h = componentNames_4.return)
+            _h.call componentNames_4
+        catch __caught
+          throw __caught
+        finally
+          if e_13
+            throw e_13.error
+      @graphChecks.clear()
+      releaseValidation()
+    return
+
+  ###* Compile assets ahead of the first request without evaluating request-dependent SSR. ###
+
+  SvelteEngine::prewarm = (sourcePath, componentName, workspace) ->
+    await undefined if false
+    await @ensureBuilt(sourcePath, componentName, workspace)
+    if @tailwind and @precompileCss
+      await @tailwindStyles.build(@readManifest(componentName), @theme, workspace)
+    return
+
+  # ── Render ────────────────────────────────────────────────────────────────
+
+  ###*
+  # Tailwind v4 browser build. Loaded as a plain <script> tag — it scans the
+  # rendered document for utility classes and compiles them client-side, no
+  # build step required. Doesn't conflict with Bootstrap 5 if both are on;
+  # most projects will only enable one of the two.
+  ###
+
+  SvelteEngine::tailwindTag = (cssFile) ->
+    if !@tailwind
+      return ''
+    if !cssFile
+      return '<script src="'.concat(TAILWIND_CDN_URL, '"></script>')
+    # Initial CSS is local and ready. Keep dynamic/plugin-generated utilities
+    # working through the existing compiler, loaded after the document parses.
+    '<link rel="stylesheet" href="/svelte-cache/'.concat(cssFile, '">\n<script src="').concat TAILWIND_CDN_URL, '" defer></script>'
+
+  ###*
+  # The `views.theme` CSS variables. Plain `:root` custom properties by
+  # default; when Tailwind is enabled they're emitted inside a v4
+  # `@theme { ... }` block instead, so the exact same config also generates
+  # real utility classes (e.g. `--color-primary` → `bg-primary`).
+  ###
+
+  SvelteEngine::themeBlock = ->
+    vars = Object.entries(@theme).map((_a) ->
+      _b = __read(_a, 2)
+      key = _b[0]
+      value = _b[1]
+      '  --'.concat(key.replace(/^--/, ''), ': ').concat value, ';'
+    ).join('\n')
+    if !vars
+      return ''
+    if @tailwind
+      return '<style type="text/tailwindcss">\n@theme {\n'.concat(vars, '\n}\n</style>')
+    '<style>:root {\n'.concat vars, '\n}</style>'
+
+  SvelteEngine::render = (sourcePath, componentName, props, workspace, options) ->
+    _a = undefined
+    _b = undefined
+    _c = undefined
+    if `props == void 0`
+      props = {}
+    if `options == void 0`
+      options = {}
+    await undefined if false
+    _d = await(@ensureBuilt(sourcePath, componentName, workspace))
+    ssr = _d.ssr
+    dom = _d.dom
+    # Bundle é content-hash no nome: mesmo caminho ⇒ mesmo conteúdo. Carrega
+    # uma vez e reusa; um rebuild produz outro caminho e nunca colide, então
+    # não há stale. Antes: delete require.cache + require a cada render (relia
+    # o arquivo do disco a cada acesso, mesmo com cache quente).
+    SSRModule = @ssrModuleCache.get(ssr)
+    if !SSRModule
+      # eslint-disable-next-line @typescript-eslint/no-var-requires
+      SSRModule = require(require.resolve(ssr))
+      @ssrModuleCache.set ssr, SSRModule
+    SvelteSSR = SSRModule.default or SSRModule
+    _e = SvelteSSR.render(props)
+    html = _e.html
+    css = _e.css
+    head = _e.head
+    serverCss = ssr.replace(/\.cjs$/, '.css')
+    if fs_1.default.existsSync(serverCss)
+      css.code += fs_1.default.readFileSync(serverCss, 'utf8')
+    clientFile = path_1.default.basename(dom)
+    cssFile = (if @tailwind and @precompileCss then await(@tailwindStyles.build(@readManifest(componentName), @theme, workspace)) else null)
+    bootstrapTags = (if @bootstrap5 then '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">\n' + '<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" defer></script>' else '')
+    hmrClient = hmrClientScript(componentName,
+      mode: (if `(_a = options.hotReloadMode) != null` and `_a != void 0` then _a else 'always')
+      badge: `options.hotReloadBadge != false`)
+    filePickerProtocol = filePickerProtocolClientScript()
+    clientScripts = (if `(_b = options.clientScripts) != null` and `_b != void 0` then _b else []).filter((script) ->
+      `typeof script == 'string'` and script.length > 0
+    )
+    __spreadArray(__spreadArray([
+      '<!DOCTYPE html>'
+      '<html>'
+      '<head>'
+      '<meta charset="utf-8">'
+      '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+      head
+      @tailwindTag(cssFile)
+      bootstrapTags
+      @themeBlock()
+      '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">'
+      '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>'
+      '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">'
+      '<title>'.concat(componentName, '</title>')
+      '<style>body { margin: 0; padding: 0; } '.concat(css.code, '</style>')
+      '</head>'
+      '<body>'
+      '<div id="app">'.concat(html, '</div>')
+      '<script type="module">'
+      'import Component from \'/svelte-cache/'.concat(clientFile, '\';')
+      'new Component({ target: document.getElementById(\'app\'), hydrate: true, props: ' + JSON.stringify(props) + ' });'
+      '</script>'
+      filePickerProtocol
+      hmrClient
+    ], __read(clientScripts), false), [
+      (if `(_c = options.offlineClient) != null` and `_c != void 0` then _c else '')
+      '</body>'
+      '</html>'
+    ], false).join '\n'
+
+  SvelteEngine
+).call(undefined)
+exports.SvelteEngine = SvelteEngine
