@@ -40,3 +40,7 @@ O transform experimental de shared state continua experimental, sem ativação n
 
 Leitura de arquivos, hashes, compressão, workers, Express e esbuild ainda requerem
 Node. Não foi introduzido um adaptador Rust nem provada execução embarcada.
+
+Com as dependências atuais, o worker Tailwind pode usar o fallback de navegador
+no Node 18 por incompatibilidade CommonJS/ESM de dependências upstream. Esse
+comportamento já existia; a suíte compara a versão migrada com a referência.

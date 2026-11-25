@@ -39,9 +39,11 @@ test('shared-state natural writes traverse nested declarations identically',()=>
  const source='<script>const state = useState("demo"); const user = state.user; function change() { user.name = "updated"; state.count++; }</script><input bind:value={user.name}><p>{state.count}</p>';
  assert.equal(b.transformSharedState(source),a.transformSharedState(source));
 });
-test('Tailwind worker produces CSS using the published worker path',async t=>{
+test('Tailwind worker and compatibility fallback match original',async t=>{
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'tailwind-migration-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
  const source=path.join(root,'Index.svelte');fs.writeFileSync(source,'<h1 class="text-red-500">Hello</h1>');
- const styles=new candidate.TailwindStyles(root);const result=await styles.build({hash:'migration',files:{[source]:'hash'}},{},root);
- assert.equal(typeof result,'string');assert.match(fs.readFileSync(path.join(root,result),'utf8'),/\.text-red-500/);
+ const cacheA=path.join(root,'original'),cacheB=path.join(root,'candidate');fs.mkdirSync(cacheA);fs.mkdirSync(cacheB);
+ const previous=new original.TailwindStyles(cacheA),styles=new candidate.TailwindStyles(cacheB),manifest={hash:'migration',files:{[source]:'hash'}};
+ const expected=await previous.build(manifest,{},root),result=await styles.build(manifest,{},root);assert.equal(result,expected);
+ if(expected===null){assert.equal(previous.failedUntil.size,1);assert.equal(styles.failedUntil.size,1);}else{assert.match(fs.readFileSync(path.join(cacheB,result),'utf8'),/\.text-red-500/);assert.equal(fs.readFileSync(path.join(cacheB,result),'utf8'),fs.readFileSync(path.join(cacheA,expected),'utf8'));}
 });
