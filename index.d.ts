@@ -15,6 +15,7 @@ export class SvelteEngine {
   constructor(cacheDir?: string, validationIntervalMs?: number);
   cacheDir: string;
   widgetRegistryPath: string;
+  slotRegistryPath: string;
   widgetComponentPath: string;
   optionalStubPath: string;
   render(source: string, componentName: string, props: Record<string, unknown>, workspace: string, options?: RenderOptions): Promise<string>;

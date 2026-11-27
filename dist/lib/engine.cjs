@@ -14,7 +14,9 @@
  * e dispara `logos:views-changed` no documento, para que a aplicação possa
  * desenhar a própria UI de "há uma atualização" em vez da barra embutida.
  */
-var CACHE_DIR, SvelteEngine, TAILWIND_CDN_URL, VIEW_MANIFEST_FORMAT, __assign, __importDefault, __read, __spreadArray, __values, assets_1, crypto_1, filePickerProtocolClientScript, file_digests_1, fs_1, hmrClientScript, isHotReloadMode, path_1, requireDep, tailwind_styles_1, utils_1;
+var CACHE_DIR, SvelteEngine, TAILWIND_CDN_URL, VIEW_MANIFEST_FORMAT, __assign, __importDefault, __read, __spreadArray, __values, assets_1, crypto_1, filePickerProtocolClientScript, file_digests_1, fs_1, hmrClientScript, isHotReloadMode, path_1, requireDep, tailwind_styles_1, utils_1, viewGroups;
+
+viewGroups = require('./view-groups.cjs');
 
 requireDep = function(name) {
   var err;
@@ -270,6 +272,7 @@ SvelteEngine = (function() {
     this.cacheDir = cacheDir;
     this.tailwindStyles = new tailwind_styles_1.TailwindStyles(cacheDir);
     utils_1.ensureDir.call(void 0, this.cacheDir);
+    this.slotRegistryPath = path_1.default.join(this.cacheDir, 'SlotRegistry.svelte');
     this.widgetRegistryPath = path_1.default.join(this.cacheDir, 'WidgetRegistry.svelte');
     this.widgetComponentPath = path_1.default.join(this.cacheDir, 'Widget.svelte');
     this.optionalStubPath = path_1.default.join(this.cacheDir, 'OptionalMissing.svelte');
@@ -452,189 +455,59 @@ SvelteEngine = (function() {
   };
   // ── Widget registry (unchanged behaviour, collision-safe) ────────────────
   SvelteEngine.prototype.buildWidgetRegistry = function(workspace) {
-    var widgetName;
-    var __caught, _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, e_2, e_2_1, e_3, e_3_1, e_4, e_4_1, file, importName, imports, mappings, nameCollisions, owners, pkg, pkgPath, qualifiedName, registryBody, safePath, simpleAliases, sourcePath, viewEntries, viewsDir, widgetFiles, widgetFiles_1, widgetFiles_1_1, widgetName, widgetsDir, widgetsDirName;
-    e_2 = void 0;
-    _a = void 0;
-    e_3 = void 0;
-    _b = void 0;
-    e_4 = void 0;
-    _c = void 0;
-    this.widgetIndex = {};
+    var component, group, groupedViews, importName, importNames, imports, j, len, mappings, name, owners, ownersByName, packages, pkg, qualifiedName, quote, registryBody, simpleAliases, slotSource, x;
+    groupedViews = viewGroups.discoverGroupedViews(workspace);
+    slotSource = viewGroups.slotSource(groupedViews);
+    if (!fs_1.default.existsSync(this.slotRegistryPath) || fs_1.default.readFileSync(this.slotRegistryPath, 'utf-8') !== slotSource) {
+      fs_1.default.writeFileSync(this.slotRegistryPath, slotSource);
+    }
+    this.widgetIndex = Object.create(null);
     imports = [];
     mappings = [];
-    nameCollisions = {};
-    if (fs_1.default.existsSync(workspace)) {
-      try {
-        _d = __values(fs_1.default.readdirSync(workspace));
-        _e = _d.next();
-        while (!_e.done) {
-          pkg = _e.value;
-          pkgPath = path_1.default.join(workspace, pkg);
-          try {
-            if (!fs_1.default.statSync(pkgPath).isDirectory()) {
-              _e = _d.next();
-              continue;
-            }
-          } catch (error1) {
-            _f = error1;
-            _e = _d.next();
-            continue;
-          }
-          viewsDir = path_1.default.join(pkgPath, 'views');
-          if (!fs_1.default.existsSync(viewsDir)) {
-            _e = _d.next();
-            continue;
-          }
-          viewEntries = void 0;
-          try {
-            viewEntries = fs_1.default.readdirSync(viewsDir);
-          } catch (error1) {
-            _g = error1;
-            _e = _d.next();
-            continue;
-          }
-          widgetsDirName = viewEntries.find(function(d) {
-            return d.toLowerCase() == 'widgets';
-          });
-          if (!widgetsDirName) {
-            _e = _d.next();
-            continue;
-          }
-          widgetsDir = path_1.default.join(viewsDir, widgetsDirName);
-          try {
-            if (!fs_1.default.statSync(widgetsDir).isDirectory()) {
-              _e = _d.next();
-              continue;
-            }
-          } catch (error1) {
-            _h = error1;
-            _e = _d.next();
-            continue;
-          }
-          widgetFiles = void 0;
-          try {
-            widgetFiles = fs_1.default.readdirSync(widgetsDir);
-          } catch (error1) {
-            _j = error1;
-            _e = _d.next();
-            continue;
-          }
-          try {
-            e_3 = void 0;
-            widgetFiles_1 = __values(widgetFiles);
-            widgetFiles_1_1 = widgetFiles_1.next();
-            while (!widgetFiles_1_1.done) {
-              file = widgetFiles_1_1.value;
-              if (!file.endsWith('.svelte') && !file.endsWith('.svx')) {
-                widgetFiles_1_1 = widgetFiles_1.next();
-                continue;
-              }
-              sourcePath = path_1.default.join(widgetsDir, file);
-              try {
-                if (!fs_1.default.statSync(sourcePath).isFile()) {
-                  widgetFiles_1_1 = widgetFiles_1.next();
-                  continue;
-                }
-              } catch (error1) {
-                _k = error1;
-                widgetFiles_1_1 = widgetFiles_1.next();
-                continue;
-              }
-              widgetName = file.replace(/\.(svelte|svx)$/, '');
-              qualifiedName = ''.concat(pkg, '__').concat(widgetName);
-              importName = 'Widget_'.concat(qualifiedName).replace(/[^a-zA-Z0-9]/g, '_');
-              safePath = sourcePath.replace(/\\/g, '/');
-              imports.push('import '.concat(importName, ' from \'').concat(safePath, '\';'));
-              mappings.push('\''.concat(qualifiedName, '\': ').concat(importName));
-              (nameCollisions[widgetName] || (nameCollisions[widgetName] = [])).push({
-                pkg: pkg,
-                importName: importName,
-                qualifiedName: qualifiedName
-              });
-              this.widgetIndex[qualifiedName] = {
-                pkg: pkg,
-                widgetName: widgetName,
-                importName: importName
-              };
-              widgetFiles_1_1 = widgetFiles_1.next();
-            }
-          } catch (error1) {
-            e_3_1 = error1;
-            e_3 = {
-              error: e_3_1
-            };
-          } finally {
-            try {
-              if (widgetFiles_1_1 && !widgetFiles_1_1.done && (_b = widgetFiles_1.return)) {
-                _b.call(widgetFiles_1);
-              }
-            } catch (error1) {
-              __caught = error1;
-              throw __caught;
-            } finally {
-              if (e_3) {
-                throw e_3.error;
-              }
-            }
-          }
-          _e = _d.next();
-        }
-      } catch (error1) {
-        e_2_1 = error1;
-        e_2 = {
-          error: e_2_1
-        };
-      } finally {
-        try {
-          if (_e && !_e.done && (_a = _d.return)) {
-            _a.call(_d);
-          }
-        } catch (error1) {
-          __caught = error1;
-          throw __caught;
-        } finally {
-          if (e_2) {
-            throw e_2.error;
-          }
-        }
+    ownersByName = new Map();
+    importNames = new Set();
+    quote = function(value) {
+      return "'" + JSON.stringify(value).slice(1, -1).replace(/'/g, "\\'") + "'";
+    };
+    for (j = 0, len = groupedViews.length; j < len; j++) {
+      ({pkg, name, group, component} = groupedViews[j]);
+      if (!(group === 'Widget')) {
+        continue;
       }
+      qualifiedName = `${pkg}__${name}`;
+      importName = `Widget_${qualifiedName}`.replace(/[^a-zA-Z0-9]/g, '_');
+      while (importNames.has(importName)) {
+        importName += '_';
+      }
+      importNames.add(importName);
+      imports.push(`import ${importName} from ${quote(component.replace(/\\/g, '/'))};`);
+      mappings.push(`${quote(qualifiedName)}: ${importName}`);
+      owners = ownersByName.get(name) || [];
+      owners.push({pkg, importName, qualifiedName});
+      ownersByName.set(name, owners);
+      this.widgetIndex[qualifiedName] = {
+        pkg,
+        widgetName: name,
+        importName
+      };
     }
     simpleAliases = [];
-    try {
-      _l = __values(Object.entries(nameCollisions));
-      _m = _l.next();
-      while (!_m.done) {
-        _o = __read(_m.value, 2);
-        widgetName = _o[0];
-        owners = _o[1];
-        if (owners.length == 1) {
-          simpleAliases.push('\''.concat(widgetName, '\': ').concat(owners[0].importName));
-          this.widgetIndex[widgetName] = this.widgetIndex[owners[0].qualifiedName];
-        } else {
-          console.warn('[views] widget name collision: "'.concat(widgetName, '" in [').concat(owners.map(function(o) {
-            return o.pkg;
-          }).join(', '), ']. ') + 'Use the qualified name (e.g. "'.concat(owners[0].qualifiedName, '").'));
+    for (x of ownersByName) {
+      [name, owners] = x;
+      if (owners.length === 1) {
+        ({qualifiedName, importName} = owners[0]);
+        if (name === '__proto__') {
+          simpleAliases.push(`[${quote(name)}]: ${importName}`);
         }
-        _m = _l.next();
-      }
-    } catch (error1) {
-      e_4_1 = error1;
-      e_4 = {
-        error: e_4_1
-      };
-    } finally {
-      try {
-        if (_m && !_m.done && (_c = _l.return)) {
-          _c.call(_l);
+        if (name !== '__proto__') {
+          simpleAliases.push(`${quote(name)}: ${importName}`);
         }
-      } catch (error1) {
-        __caught = error1;
-        throw __caught;
-      } finally {
-        if (e_4) {
-          throw e_4.error;
-        }
+        this.widgetIndex[name] = this.widgetIndex[qualifiedName];
+      } else {
+        packages = owners.map(function(owner) {
+          return owner.pkg;
+        }).join(', ');
+        console.warn(`[views] widget name collision: \"${name}\" in [${packages}]. Use the qualified name (e.g. \"${owners[0].qualifiedName}\").`);
       }
     }
     registryBody = function(extraMsg) {
@@ -691,38 +564,42 @@ SvelteEngine = (function() {
     };
   };
   SvelteEngine.prototype.preprocess = function() {
-    var importId, importStmt, registryPath;
+    var importId, importStmt, registryPath, slotPath;
     registryPath = this.widgetRegistryPath;
+    slotPath = this.slotRegistryPath;
     importId = '\'svelte-view-engine:registry\'';
     importStmt = 'import Widget from '.concat(importId, ';');
     return {
       markup: function(_a) {
-        var content, filename, scriptMatch;
+        var content, filename, imports, scriptMatch, statements;
         content = _a.content;
         filename = _a.filename;
-        if (filename == registryPath) {
+        if (filename === registryPath || filename === slotPath) {
           return {
             code: content
           };
         }
-        if (!content.includes('<Widget')) {
+        imports = [];
+        if (content.includes('<Widget') && !content.includes(importId)) {
+          imports.push(importStmt);
+        }
+        if (/<Slot(?=[\s\/>])/.test(content) && !/\bimport\s+Slot\b/.test(content)) {
+          imports.push("import Slot from 'svelte-view-engine:slot';");
+        }
+        if (!imports.length) {
           return {
             code: content
           };
         }
-        if (content.includes(importId)) {
-          return {
-            code: content
-          };
-        }
-        scriptMatch = content.match(/<script([^>]*)>/);
+        statements = imports.join('\n  ');
+        scriptMatch = content.match(/<script\b(?![^>]*\b(?:module|context)\b)[^>]*>/);
         if (scriptMatch) {
           return {
-            code: content.replace(scriptMatch[0], ''.concat(scriptMatch[0], '\n  ').concat(importStmt))
+            code: content.replace(scriptMatch[0], `${scriptMatch[0]}\n  ${statements}`)
           };
         }
         return {
-          code: '<script>\n  '.concat(importStmt, '\n</script>\n').concat(content)
+          code: `<script>\n  ${statements}\n</script>\n${content}`
         };
       }
     };
@@ -763,6 +640,33 @@ SvelteEngine = (function() {
           return {
             path: _this.widgetRegistryPath
           };
+        });
+        build.onResolve({
+          filter: /^svelte-view-engine:slot$/
+        }, function() {
+          if (!fs_1.default.existsSync(_this.slotRegistryPath)) {
+            _this.buildWidgetRegistry(workspace);
+          }
+          return {
+            path: _this.slotRegistryPath
+          };
+        });
+        build.onResolve({
+          filter: /^logos-view:/
+        }, function(args) {
+          var match, target;
+          match = args.path.match(/^logos-view:([\w-]+):([\w-]+)$/);
+          if (!match) {
+            return null;
+          }
+          target = viewGroups.resolveDirectView(workspace, match[1], match[2]);
+          if (target) {
+            return {
+              path: target
+            };
+          } else {
+            return null;
+          }
         });
         build.onResolve({
           filter: /^@packages\//
@@ -989,7 +893,7 @@ SvelteEngine = (function() {
   SvelteEngine.prototype.isMissingWidgetRegistryImport = function(error) {
     var message;
     message = (error instanceof Error ? error.message : String(error));
-    return /WidgetRegistry\.svelte[\s\S]*(Could not resolve|Could not read|ENOENT)|(?:Could not resolve|Could not read|ENOENT)[\s\S]*WidgetRegistry\.svelte/i.test(message);
+    return /(?:Widget|Slot)Registry\.svelte[\s\S]*(Could not resolve|Could not read|ENOENT)|(?:Could not resolve|Could not read|ENOENT)[\s\S]*(?:Widget|Slot)Registry\.svelte/i.test(message);
   };
   SvelteEngine.prototype.compile = async function(sourcePath, componentName, workspace, promote) {
     var domBuild, files, graphFiles, hash, registrySource, source, ssrBuild, usesWidget;

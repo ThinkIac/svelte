@@ -1,0 +1,96 @@
+fs = require('node:fs')
+path = require('node:path')
+
+componentName = (file) ->
+  file.match(/^(.+)\.(?:svelte|svx)$/)?[1]
+
+groupedName = (file) ->
+  parts = componentName(file)?.match(/^([^.]+)\.([^.]+)$/)
+  return null unless parts and parts[2].toLowerCase() isnt 'public'
+  { name: parts[1], group: parts[2] }
+
+isGroupedViewPath = (file) ->
+  parts = file.split(/[\\/]/)
+  parts.at(-2) is 'views' and Boolean(groupedName(parts.at(-1)))
+
+readNames = (dir) ->
+  try
+    fs.readdirSync(dir).sort()
+  catch error
+    return [] if error.code in ['ENOENT', 'ENOTDIR', 'EACCES']
+    throw error
+
+isFile = (file) ->
+  try
+    fs.statSync(file).isFile()
+  catch error
+    return false if error.code in ['ENOENT', 'ENOTDIR', 'EACCES']
+    throw error
+
+discoverGroupedViews = (workspace) ->
+  entries = []
+  for pkg in readNames(workspace)
+    views = path.resolve(workspace, pkg, 'views')
+    files = readNames(views)
+    targets = new Set()
+    packageEntries = []
+    add = (name, group, component) ->
+      return unless isFile(component)
+      target = [pkg, name, group].join(':')
+      return if targets.has(target)
+      targets.add(target)
+      packageEntries.push { pkg, name, group, target, component }
+
+    for file in files
+      parsed = groupedName(file)
+      add(parsed.name, parsed.group, path.join(views, file)) if parsed
+    legacy = files.find((name) -> name.toLowerCase() is 'widgets')
+    if legacy
+      for file in readNames(path.join(views, legacy))
+        name = componentName(file)
+        add(name, 'Widget', path.join(views, legacy, file)) if name
+    packageEntries.sort((a, b) ->
+      first = path.basename(a.component)
+      second = path.basename(b.component)
+      if first < second then -1 else if first > second then 1 else 0
+    )
+    entries.push(...packageEntries)
+  entries
+
+resolveDirectView = (workspace, pkg, name) ->
+  views = path.resolve(workspace, pkg, 'views')
+  for ext in ['svelte', 'svx']
+    target = path.join(views, "#{name}.#{ext}")
+    return target if isFile(target)
+  null
+
+slotSource = (entries) ->
+  imports = entries.map (entry, index) ->
+    "import View#{index} from #{JSON.stringify(entry.component.replace(/\\/g, '/'))};"
+  registry = entries.map ({pkg, name, group, target}, index) ->
+    "{ ...#{JSON.stringify({pkg, name, group, target})}, component: View#{index} }"
+  """
+  <script>
+    #{imports.join('\n  ')}
+    const registry = [#{registry.join(',\n  ')}];
+    let { group, filter, sort, workspace, children, ...props } = $props();
+    let items = $derived.by(() => {
+      const selected = registry.filter(item => item.group === group && (!filter || filter(item)));
+      return sort ? selected.sort(sort) : selected;
+    });
+  </script>
+
+  {#each items as item (item.target)}
+    {@const Component = item.component}
+    {#snippet renderItem()}
+      <Component {...props} {workspace} />
+    {/snippet}
+    {#if children}
+      {@render children(item, renderItem)}
+    {:else}
+      {@render renderItem()}
+    {/if}
+  {/each}
+  """
+
+module.exports = { discoverGroupedViews, isGroupedViewPath, resolveDirectView, slotSource }

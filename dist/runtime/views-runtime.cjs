@@ -23,7 +23,7 @@ createRuntime = function(bridge) {
    * setViewsTheme() — the same theme variables feed Tailwind's `@theme` block
    * once this is on.
    */
-  var DEFAULT_HOT_RELOAD_MODE, SvelteEngine, __importDefault, _a, exports, express_1, fs_1, getEngine, getViewsGlobalData, getWidgetComponentPath, globalData, http_1, http_performance_1, isHomepageRedirect, isHotReloadMode, isRegisteredPublicView, isViewPageName, isWidgetPath, mountPackageViews, offline_1, onViewsFileChanged, path_1, prewarmViews, privateViewFile, publicPages, publicViewFile, rebuildWidgetRegistry, renderPage, replacePublicViews, resolveEntryView, resolveHotReloadMode, resolveViewSource, setViewsGlobalData, setViewsTailwind, setViewsTheme, viewFiles, ws_1;
+  var DEFAULT_HOT_RELOAD_MODE, SvelteEngine, __importDefault, _a, exports, express_1, fs_1, getEngine, getViewsGlobalData, getWidgetComponentPath, globalData, http_1, http_performance_1, isGroupedViewPath, isHomepageRedirect, isHotReloadMode, isRegisteredPublicView, isViewPageName, isWidgetPath, mountPackageViews, offline_1, onViewsFileChanged, path_1, prewarmViews, privateViewFile, publicPages, publicViewFile, rebuildWidgetRegistry, renderPage, replacePublicViews, resolveEntryView, resolveHotReloadMode, resolveViewSource, setViewsGlobalData, setViewsTailwind, setViewsTheme, viewFiles, ws_1;
   exports = {};
   // modules/views/index.ts — the views module (wire phase).
 
@@ -40,6 +40,7 @@ createRuntime = function(bridge) {
   isWidgetPath = function(filePath) {
     return /[\\\/]views[\\\/]widgets(?:[\\\/]|$)/i.test(filePath);
   };
+  ({isGroupedViewPath} = require('../lib/view-groups.cjs'));
   resolveHotReloadMode = function(container, pkgFolder, query) {
     var _a, _b, _c, _d, _e, _f, _g, configured, declared, pkg;
     _a = void 0;
@@ -374,7 +375,7 @@ createRuntime = function(bridge) {
   };
   onViewsFileChanged = async function(container, payload) {
     var detail;
-    var _a, _b, affected, changed, detail, engine, error, hub, isWidget, signal;
+    var _a, _b, affected, changed, component, detail, engine, error, hub, j, k, len, len1, ref, ref1, registryChanged, registryPath, signal;
     _a = void 0;
     _b = void 0;
     if (false) {
@@ -383,15 +384,21 @@ createRuntime = function(bridge) {
     engine = getEngine(container);
     changed = path_1.default.resolve(payload.file);
     replacePublicViews(container, payload.pkg, path_1.default.join(container.workspace, payload.pkg, 'views'));
-    // Widgets folder changed → registry must be rebuilt (affects every page).
-    isWidget = isWidgetPath(changed);
-    if (isWidget) {
+    registryChanged = isWidgetPath(changed) || isGroupedViewPath(changed) || /[\\\/]views$/.test(changed);
+    affected = new Set(engine.affectedComponents(changed));
+    if (registryChanged) {
       engine.buildWidgetRegistry(container.workspace);
+      ref = [engine.widgetRegistryPath, engine.slotRegistryPath];
+      for (j = 0, len = ref.length; j < len; j++) {
+        registryPath = ref[j];
+        ref1 = engine.affectedComponents(registryPath);
+        for (k = 0, len1 = ref1.length; k < len1; k++) {
+          component = ref1[k];
+          affected.add(component);
+        }
+      }
     }
-    // A remoção de uma pasta não pertence ao grafo anterior de nenhuma página.
-    // O registry, porém, pertence ao grafo de toda página que usa <Widget>.
-    // Portanto sua reconstrução é a mudança que essas páginas precisam receber.
-    affected = __spreadArray([], __read(new Set(__spreadArray(__spreadArray([], __read(engine.affectedComponents(changed)), false), __read((isWidget ? engine.affectedComponents(engine.widgetRegistryPath) : [])), false))), false);
+    affected = Array.from(affected);
     try {
       // A alteração só é publicada depois de compilar e renderizar SSR sem DOM.
       // Assim um `window` fora de onMount mantém a versão saudável em serviço.
