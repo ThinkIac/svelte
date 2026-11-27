@@ -29,3 +29,83 @@ test('renders and hydrates a Svelte page without Logos internals', async () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+test('Slot renders groups in discovery order and supports filtering, sorting and wrappers', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'thinkiac-slot-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspace = join(root, 'packages');
+  const addView = (pkg, file, source) => {
+    const folder = join(workspace, pkg, 'views');
+    mkdirSync(folder, { recursive: true });
+    const view = join(folder, file);
+    writeFileSync(view, source);
+    return view;
+  };
+
+  addView('zeta', 'Alpha.Widget.svelte', '<b>zeta-alpha</b>');
+  addView('alpha', 'Zulu.Widget.svelte', '<b>alpha-zulu</b>');
+  const removed = addView('alpha', 'Beta.Widget.svelte', '<b>alpha-beta</b>');
+  addView('alpha', 'Check.Action.svelte', '<script>let { workspace } = $props();</script><b>{workspace}</b>');
+  addView('alpha', 'Help.public.svelte', '<b>public page</b>');
+  addView('alpha', 'Detail.svelte', '<b>direct view</b>');
+  const source = addView('host', 'Index.svelte', [
+    '<script module>export const title = "Slots";</script>',
+    '<script>import Detail from "logos-view:alpha:Detail";</script>',
+    '<section id="default"><Slot group="Widget" /></section>',
+    '<ul><Slot group="Widget" filter={item => item.pkg === "alpha"} sort={(a, b) => b.name.localeCompare(a.name)}>',
+    '{#snippet children(item, renderItem)}<li data-target={item.target}>{@render renderItem()}</li>{/snippet}',
+    '</Slot></ul>',
+    '<Slot group="Action" workspace="workspace-prop" />',
+    '<Slot group="public" />',
+    '<Widget name="alpha__Zulu" />',
+    '<Detail />',
+  ].join('\n'));
+
+  const engine = new SvelteEngine(join(root, 'cache'), 0);
+  engine.buildWidgetRegistry(workspace);
+  const html = await engine.render(source, 'host__Index', {}, workspace);
+  assert.deepEqual(html.match(/<b>[^<]+<\/b>/g), [
+    '<b>alpha-beta</b>', '<b>alpha-zulu</b>', '<b>zeta-alpha</b>',
+    '<b>alpha-zulu</b>', '<b>alpha-beta</b>',
+    '<b>workspace-prop</b>', '<b>alpha-zulu</b>', '<b>direct view</b>',
+  ]);
+  assert.match(html, /data-target="alpha:Zulu:Widget"/);
+  assert.match(html, /svelte-cache\/host__Index\.DOM\./);
+  assert.deepEqual(engine.affectedComponents(engine.slotRegistryPath), []);
+
+  rmSync(removed);
+  addView('alpha', 'New.Widget.svelte', '<b>alpha-new</b>');
+  const changedSlots = engine.buildWidgetRegistry(workspace);
+  assert.equal(changedSlots.length, 2);
+  assert.deepEqual(engine.affectedComponents(changedSlots[1]), ['host__Index']);
+  const rebuilt = await engine.render(source, 'host__Index', {}, workspace);
+  assert.doesNotMatch(rebuilt, /alpha-beta/);
+  assert.match(rebuilt, /alpha-new/);
+});
+
+
+test('a literal Slot group compiles independently and picks up newly discovered views', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'thinkiac-slot-isolated-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspace = join(root, 'packages');
+  const views = join(workspace, 'demo', 'views');
+  mkdirSync(views, { recursive: true });
+  const source = join(views, 'Index.svelte');
+  const broken = join(views, 'Broken.Widget.svelte');
+  writeFileSync(source, '<Slot group={"Action"}>{#snippet children(item, renderItem)}{@render renderItem()}{/snippet}</Slot>');
+  writeFileSync(broken, '<script>const = ;</script>');
+  const engine = new SvelteEngine(join(root, 'cache'), 0);
+  const initial = await engine.render(source, 'demo__Index', {}, workspace);
+  assert.doesNotMatch(initial, /action loaded/);
+  writeFileSync(join(views, 'Run.Action.svelte'), '<b>action loaded</b>');
+  engine.buildWidgetRegistry(workspace);
+  const updated = await engine.render(source, 'demo__Index', {}, workspace);
+  assert.match(updated, /action loaded/);
+  assert.match(updated, /svelte-cache\/demo__Index\.DOM\./);
+
+  rmSync(broken);
+  engine.buildWidgetRegistry(workspace);
+  const dynamic = join(views, 'Dynamic.svelte');
+  writeFileSync(dynamic, '<script>let { group } = $props();</script><Slot {group} />');
+  const html = await engine.render(dynamic, 'demo__Dynamic', { group: 'Action' }, workspace);
+  assert.match(html, /action loaded/);
+});

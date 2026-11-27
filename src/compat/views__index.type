@@ -88,6 +88,8 @@ module.exports = (require, module, exports, __dirname, __filename, kernel) ->
   isWidgetPath = (filePath) ->
     /[\\/]views[\\/]widgets(?:[\\/]|$)/i.test filePath
 
+  { isGroupedViewPath } = require(require('node:path').join(__dirname, '..', 'dist', 'lib', 'view-groups.cjs'))
+
   ###*
   # Precedência do modo de hot-reload de uma página, do mais específico ao mais
   # geral:
@@ -379,14 +381,14 @@ module.exports = (require, module, exports, __dirname, __filename, kernel) ->
     engine = getEngine(container)
     changed = path_1.default.resolve(payload.file)
     replacePublicViews container, payload.pkg, path_1.default.join(container.workspace, payload.pkg, 'views')
-    # Widgets folder changed → registry must be rebuilt (affects every page).
-    isWidget = isWidgetPath(changed)
-    if isWidget
-      engine.buildWidgetRegistry container.workspace
-    # A remoção de uma pasta não pertence ao grafo anterior de nenhuma página.
-    # O registry, porém, pertence ao grafo de toda página que usa <Widget>.
-    # Portanto sua reconstrução é a mudança que essas páginas precisam receber.
-    affected = __spreadArray([], __read(new Set(__spreadArray(__spreadArray([], __read(engine.affectedComponents(changed)), false), __read((if isWidget then engine.affectedComponents(engine.widgetRegistryPath) else [])), false))), false)
+    registryChanged = isWidgetPath(changed) or isGroupedViewPath(changed) or /[\\/]views$/.test(changed)
+    affected = new Set(engine.affectedComponents(changed))
+    if registryChanged
+      changedSlots = engine.buildWidgetRegistry(container.workspace)
+      for registryPath in [engine.widgetRegistryPath, ...changedSlots]
+        for component in engine.affectedComponents(registryPath)
+          affected.add(component)
+    affected = Array.from(affected)
     try
       # A alteração só é publicada depois de compilar e renderizar SSR sem DOM.
       # Assim um `window` fora de onMount mantém a versão saudável em serviço.

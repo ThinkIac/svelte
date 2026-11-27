@@ -1,3 +1,7 @@
+viewGroups = require('./view-groups.cjs')
+{ createHash } = require('node:crypto')
+slotGroupKey = (group) -> createHash('sha256').update(group, 'utf16le').digest('hex')
+
 requireDep = (name) ->
   try
     # eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -200,6 +204,7 @@ SvelteEngine = (->
     @cacheDir = cacheDir
     @tailwindStyles = new (tailwind_styles_1.TailwindStyles)(cacheDir)
     utils_1.ensureDir.call undefined, @cacheDir
+    @slotRegistryPath = path_1.default.join(@cacheDir, 'SlotRegistry.svelte')
     @widgetRegistryPath = path_1.default.join(@cacheDir, 'WidgetRegistry.svelte')
     @widgetComponentPath = path_1.default.join(@cacheDir, 'Widget.svelte')
     @optionalStubPath = path_1.default.join(@cacheDir, 'OptionalMissing.svelte')
@@ -356,147 +361,57 @@ SvelteEngine = (->
 
   # ── Widget registry (unchanged behaviour, collision-safe) ────────────────
 
+  SvelteEngine::writeSlotRegistry = (registryPath, entries) ->
+    source = viewGroups.slotSource(entries)
+    return false if fs_1.default.existsSync(registryPath) and fs_1.default.readFileSync(registryPath, 'utf-8') is source
+    fs_1.default.writeFileSync registryPath, source
+    true
+
   SvelteEngine::buildWidgetRegistry = (workspace) ->
-    `var widgetName`
-    e_2 = undefined
-    _a = undefined
-    e_3 = undefined
-    _b = undefined
-    e_4 = undefined
-    _c = undefined
-    @widgetIndex = {}
+    groupedViews = viewGroups.discoverGroupedViews(workspace)
+    changedSlots = []
+    changedSlots.push(@slotRegistryPath) if @writeSlotRegistry(@slotRegistryPath, groupedViews)
+    viewsByGroup = new Map()
+    for entry in groupedViews
+      key = slotGroupKey(entry.group)
+      entries = viewsByGroup.get(key) or []
+      entries.push(entry)
+      viewsByGroup.set(key, entries)
+    for file in fs_1.default.readdirSync(@cacheDir)
+      match = file.match(/^SlotRegistry-([0-9a-f]{64})\.svelte$/)
+      continue unless match
+      registryPath = path_1.default.join(@cacheDir, file)
+      changedSlots.push(registryPath) if @writeSlotRegistry(registryPath, viewsByGroup.get(match[1]) or [])
+
+    @widgetIndex = Object.create(null)
     imports = []
     mappings = []
-    nameCollisions = {}
-    if fs_1.default.existsSync(workspace)
-      try
-        _d = __values(fs_1.default.readdirSync(workspace))
-        _e = _d.next()
-        while !_e.done
-          pkg = _e.value
-          pkgPath = path_1.default.join(workspace, pkg)
-          try
-            if !fs_1.default.statSync(pkgPath).isDirectory()
-              _e = _d.next()
-              continue
-          catch _f
-            _e = _d.next()
-            continue
-          viewsDir = path_1.default.join(pkgPath, 'views')
-          if !fs_1.default.existsSync(viewsDir)
-            _e = _d.next()
-            continue
-          viewEntries = undefined
-          try
-            viewEntries = fs_1.default.readdirSync(viewsDir)
-          catch _g
-            _e = _d.next()
-            continue
-          widgetsDirName = viewEntries.find((d) ->
-            `d.toLowerCase() == 'widgets'`
-          )
-          if !widgetsDirName
-            _e = _d.next()
-            continue
-          widgetsDir = path_1.default.join(viewsDir, widgetsDirName)
-          try
-            if !fs_1.default.statSync(widgetsDir).isDirectory()
-              _e = _d.next()
-              continue
-          catch _h
-            _e = _d.next()
-            continue
-          widgetFiles = undefined
-          try
-            widgetFiles = fs_1.default.readdirSync(widgetsDir)
-          catch _j
-            _e = _d.next()
-            continue
-          try
-            e_3 = undefined
-            widgetFiles_1 = __values(widgetFiles)
-            widgetFiles_1_1 = widgetFiles_1.next()
-            while !widgetFiles_1_1.done
-              file = widgetFiles_1_1.value
-              if !file.endsWith('.svelte') and !file.endsWith('.svx')
-                widgetFiles_1_1 = widgetFiles_1.next()
-                continue
-              sourcePath = path_1.default.join(widgetsDir, file)
-              # A remoção pode ocorrer durante esta varredura. Nunca grave um
-              # import para algo que já não existe: a próxima reconstrução parte
-              # do disco e fica saudável por si só.
-              try
-                if !fs_1.default.statSync(sourcePath).isFile()
-                  widgetFiles_1_1 = widgetFiles_1.next()
-                  continue
-              catch _k
-                widgetFiles_1_1 = widgetFiles_1.next()
-                continue
-              widgetName = file.replace(/\.(svelte|svx)$/, '')
-              qualifiedName = ''.concat(pkg, '__').concat(widgetName)
-              importName = 'Widget_'.concat(qualifiedName).replace(/[^a-zA-Z0-9]/g, '_')
-              safePath = sourcePath.replace(/\\/g, '/')
-              imports.push 'import '.concat(importName, ' from \'').concat(safePath, '\';')
-              mappings.push '\''.concat(qualifiedName, '\': ').concat(importName)
-              (nameCollisions[widgetName] or (nameCollisions[widgetName] = [])).push
-                pkg: pkg
-                importName: importName
-                qualifiedName: qualifiedName
-              @widgetIndex[qualifiedName] =
-                pkg: pkg
-                widgetName: widgetName
-                importName: importName
-              widgetFiles_1_1 = widgetFiles_1.next()
-          catch e_3_1
-            e_3 = error: e_3_1
-          finally
-            try
-              if widgetFiles_1_1 and !widgetFiles_1_1.done and (_b = widgetFiles_1.return)
-                _b.call widgetFiles_1
-            catch __caught
-              throw __caught
-            finally
-              if e_3
-                throw e_3.error
-          _e = _d.next()
-      catch e_2_1
-        e_2 = error: e_2_1
-      finally
-        try
-          if _e and !_e.done and (_a = _d.return)
-            _a.call _d
-        catch __caught
-          throw __caught
-        finally
-          if e_2
-            throw e_2.error
+    ownersByName = new Map()
+    importNames = new Set()
+    quote = (value) -> "'" + JSON.stringify(value).slice(1, -1).replace(/'/g, "\\'") + "'"
+    for {pkg, name, group, component} in groupedViews when group is 'Widget'
+      qualifiedName = "#{pkg}__#{name}"
+      importName = "Widget_#{qualifiedName}".replace(/[^a-zA-Z0-9]/g, '_')
+      while importNames.has(importName)
+        importName += '_'
+      importNames.add(importName)
+      imports.push "import #{importName} from #{quote(component.replace(/\\/g, '/'))};"
+      mappings.push "#{quote(qualifiedName)}: #{importName}"
+      owners = ownersByName.get(name) or []
+      owners.push {pkg, importName, qualifiedName}
+      ownersByName.set(name, owners)
+      @widgetIndex[qualifiedName] = {pkg, widgetName: name, importName}
+
     simpleAliases = []
-    try
-      _l = __values(Object.entries(nameCollisions))
-      _m = _l.next()
-      while !_m.done
-        _o = __read(_m.value, 2)
-        widgetName = _o[0]
-        owners = _o[1]
-        if `owners.length == 1`
-          simpleAliases.push '\''.concat(widgetName, '\': ').concat(owners[0].importName)
-          @widgetIndex[widgetName] = @widgetIndex[owners[0].qualifiedName]
-        else
-          console.warn '[views] widget name collision: "'.concat(widgetName, '" in [').concat(owners.map((o) ->
-            o.pkg
-          ).join(', '), ']. ') + 'Use the qualified name (e.g. "'.concat(owners[0].qualifiedName, '").')
-        _m = _l.next()
-    catch e_4_1
-      e_4 = error: e_4_1
-    finally
-      try
-        if _m and !_m.done and (_c = _l.return)
-          _c.call _l
-      catch __caught
-        throw __caught
-      finally
-        if e_4
-          throw e_4.error
+    for [name, owners] from ownersByName
+      if owners.length is 1
+        {qualifiedName, importName} = owners[0]
+        simpleAliases.push "[#{quote(name)}]: #{importName}" if name is '__proto__'
+        simpleAliases.push "#{quote(name)}: #{importName}" unless name is '__proto__'
+        @widgetIndex[name] = @widgetIndex[qualifiedName]
+      else
+        packages = owners.map((owner) -> owner.pkg).join(', ')
+        console.warn "[views] widget name collision: \"#{name}\" in [#{packages}]. Use the qualified name (e.g. \"#{owners[0].qualifiedName}\")."
 
     registryBody = (extraMsg) ->
       '<script>\n  '.concat(imports.join('\n  '), '\n  const registry = { ').concat(__spreadArray(__spreadArray([], __read(mappings), false), __read(simpleAliases), false).join(', '), ' };\n  export let name = \'\';\n  export let filter = \'\';\n  export let max = null;\n  $: limit = max ? parseInt(max, 10) : undefined;\n  $: widgetKeys = Object.keys(registry)\n    .filter(k => { if (k.includes(\'__\')) return false; return filter ? k.toLowerCase().includes(filter.toLowerCase()) : true; })\n    .slice(0, limit);\n</script>\n{#if name}\n  {#if registry[name]}\n    <svelte:component this={registry[name]} {...$$restProps} />\n  {:else}\n    <div style="color:red;border:1px dashed red;padding:.5rem;font-family:monospace;font-size:12px;">\n      [views] Widget "{name}" not found. ').concat extraMsg, '\n    </div>\n  {/if}\n{:else if filter || max}\n  {#each widgetKeys as widgetKey}\n    <svelte:component this={registry[widgetKey]} {...$$restProps} />\n  {/each}\n{:else}\n  <div style="color:orange;border:1px dashed orange;padding:.5rem;font-family:monospace;font-size:12px;">\n    [views] &lt;Widget&gt; needs <code>name</code>, <code>filter</code> or <code>max</code>.\n  </div>\n{/if}'
@@ -506,7 +421,7 @@ SvelteEngine = (->
     # Substituto de uma view de outro pacote que não está instalado. Renderiza
     # nada de propósito: o recurso some da tela, em vez de derrubar a página.
     fs_1.default.writeFileSync @optionalStubPath, '<!-- pacote opcional ausente -->\n'
-    return
+    changedSlots
 
   SvelteEngine::getWidgetIndex = ->
     __assign {}, @widgetIndex
@@ -545,21 +460,27 @@ SvelteEngine = (->
 
   SvelteEngine::preprocess = ->
     registryPath = @widgetRegistryPath
+    cacheDir = @cacheDir
     importId = '\'svelte-view-engine:registry\''
     importStmt = 'import Widget from '.concat(importId, ';')
     { markup: (_a) ->
       content = _a.content
       filename = _a.filename
-      if `filename == registryPath`
-        return { code: content }
-      if !content.includes('<Widget')
-        return { code: content }
-      if content.includes(importId)
-        return { code: content }
-      scriptMatch = content.match(/<script([^>]*)>/)
+      generatedSlot = filename and path_1.default.dirname(filename) is cacheDir and /^SlotRegistry(?:-[0-9a-f]*)?\.svelte$/.test(path_1.default.basename(filename))
+      return { code: content } if filename is registryPath or generatedSlot
+      imports = []
+      if content.includes('<Widget') and !content.includes(importId)
+        imports.push(importStmt)
+      if /<Slot(?=[\s/>])/.test(content) and !/\bimport\s+Slot\b/.test(content)
+        resolved = viewGroups.slotImports(content)
+        content = resolved.content
+        imports.push(...resolved.imports)
+      return { code: content } unless imports.length
+      statements = imports.join('\n  ')
+      scriptMatch = content.match(/<script\b(?![^>]*\b(?:module|context)\b)[^>]*>/)
       if scriptMatch
-        return { code: content.replace(scriptMatch[0], ''.concat(scriptMatch[0], '\n  ').concat(importStmt)) }
-      { code: '<script>\n  '.concat(importStmt, '\n</script>\n').concat(content) }
+        return { code: content.replace(scriptMatch[0], "#{scriptMatch[0]}\n  #{statements}") }
+      { code: "<script>\n  #{statements}\n</script>\n#{content}" }
  }
 
   # esbuild's onResolve doesn't do Node-style directory-to-index.js
@@ -592,6 +513,23 @@ SvelteEngine = (->
       setup: (build) ->
         build.onResolve { filter: /^svelte-view-engine:registry$/ }, ->
           { path: _this.widgetRegistryPath }
+        build.onResolve { filter: /^svelte-view-engine:slot$/ }, ->
+          unless fs_1.default.existsSync(_this.slotRegistryPath)
+            _this.buildWidgetRegistry(workspace)
+          { path: _this.slotRegistryPath }
+        build.onResolve { filter: /^svelte-view-engine:slot:[0-9a-f]*$/ }, (args) ->
+          group = Buffer.from(args.path.split(':').at(-1), 'hex').toString('utf16le')
+          key = slotGroupKey(group)
+          registryPath = path_1.default.join(_this.cacheDir, "SlotRegistry-#{key}.svelte")
+          unless fs_1.default.existsSync(registryPath)
+            entries = viewGroups.discoverGroupedViews(workspace).filter((entry) -> entry.group is group)
+            _this.writeSlotRegistry(registryPath, entries)
+          { path: registryPath }
+        build.onResolve { filter: /^logos-view:/ }, (args) ->
+          match = args.path.match(/^logos-view:([\w-]+):([\w-]+)$/)
+          return null unless match
+          target = viewGroups.resolveDirectView(workspace, match[1], match[2])
+          if target then { path: target } else null
         build.onResolve { filter: /^@packages\// }, (args) ->
           { path: path_1.default.join(workspace, args.path.slice('@packages/'.length)) }
         # Svelte 4 pinning — contained in the bundle graph, no global patch.
@@ -767,7 +705,7 @@ SvelteEngine = (->
 
   SvelteEngine::isMissingWidgetRegistryImport = (error) ->
     message = (if error instanceof Error then error.message else String(error))
-    /WidgetRegistry\.svelte[\s\S]*(Could not resolve|Could not read|ENOENT)|(?:Could not resolve|Could not read|ENOENT)[\s\S]*WidgetRegistry\.svelte/i.test message
+    /(?:Widget|Slot)Registry\.svelte[\s\S]*(Could not resolve|Could not read|ENOENT)|(?:Could not resolve|Could not read|ENOENT)[\s\S]*(?:Widget|Slot)Registry\.svelte/i.test message
 
   SvelteEngine::compile = (sourcePath, componentName, workspace, promote) ->
     if `promote == void 0`

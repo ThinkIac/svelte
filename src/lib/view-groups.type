@@ -1,0 +1,134 @@
+fs = require('node:fs')
+path = require('node:path')
+
+componentName = (file) ->
+  file.match(/^(.+)\.(?:svelte|svx)$/)?[1]
+
+groupedName = (file) ->
+  parts = componentName(file)?.match(/^([^.]+)\.([^.]+)$/)
+  return null unless parts and parts[2].toLowerCase() isnt 'public'
+  { name: parts[1], group: parts[2] }
+
+isGroupedViewPath = (file) ->
+  parts = file.split(/[\\/]/)
+  parts.at(-2) is 'views' and Boolean(groupedName(parts.at(-1)))
+
+readNames = (dir) ->
+  try
+    fs.readdirSync(dir).sort()
+  catch error
+    return [] if error.code in ['ENOENT', 'ENOTDIR', 'EACCES']
+    throw error
+
+isFile = (file) ->
+  try
+    fs.statSync(file).isFile()
+  catch error
+    return false if error.code in ['ENOENT', 'ENOTDIR', 'EACCES']
+    throw error
+
+discoverGroupedViews = (workspace) ->
+  entries = []
+  for pkg in readNames(workspace)
+    views = path.resolve(workspace, pkg, 'views')
+    files = readNames(views)
+    targets = new Set()
+    packageEntries = []
+    add = (name, group, component) ->
+      return unless isFile(component)
+      target = [pkg, name, group].join(':')
+      return if targets.has(target)
+      targets.add(target)
+      packageEntries.push { pkg, name, group, target, component }
+
+    for file in files
+      parsed = groupedName(file)
+      add(parsed.name, parsed.group, path.join(views, file)) if parsed
+    legacy = files.find((name) -> name.toLowerCase() is 'widgets')
+    if legacy
+      for file in readNames(path.join(views, legacy))
+        name = componentName(file)
+        add(name, 'Widget', path.join(views, legacy, file)) if name
+    packageEntries.sort((a, b) ->
+      first = path.basename(a.component)
+      second = path.basename(b.component)
+      if first < second then -1 else if first > second then 1 else 0
+    )
+    entries.push(...packageEntries)
+  entries
+
+resolveDirectView = (workspace, pkg, name) ->
+  views = path.resolve(workspace, pkg, 'views')
+  for ext in ['svelte', 'svx']
+    target = path.join(views, "#{name}.#{ext}")
+    return target if isFile(target)
+  null
+
+slotSource = (entries) ->
+  imports = entries.map (entry, index) ->
+    "import View#{index} from #{JSON.stringify(entry.component.replace(/\\/g, '/'))};"
+  registry = entries.map ({pkg, name, group, target}, index) ->
+    "{ ...#{JSON.stringify({pkg, name, group, target})}, component: View#{index} }"
+  """
+  <script>
+    #{imports.join('\n  ')}
+    const registry = [#{registry.join(',\n  ')}];
+    let { group, filter, sort, workspace, children, ...props } = $props();
+    let items = $derived.by(() => {
+      const selected = registry.filter(item => item.group === group && (!filter || filter(item)));
+      return sort ? selected.sort(sort) : selected;
+    });
+  </script>
+
+  {#each items as item (item.target)}
+    {@const Component = item.component}
+    {#snippet renderItem()}
+      <Component {...props} {workspace} />
+    {/snippet}
+    {#if children}
+      {@render children(item, renderItem)}
+    {:else}
+      {@render renderItem()}
+    {/if}
+  {/each}
+  """
+
+slotImports = (content) ->
+  { parse } = require('svelte/compiler')
+  aliases = new Map()
+  edits = []
+  visit = (node) ->
+    return unless node and typeof node is 'object'
+    if node.type is 'Component' and node.name is 'Slot'
+      group = undefined
+      for attr in node.attributes
+        if attr.type is 'SpreadAttribute'
+          group = undefined
+        if attr.type is 'Attribute' and attr.name is 'group'
+          value = attr.value
+          value = if value.length is 1 then value[0] else value
+          group = if value.type is 'Text' then value.data else value.expression?.value
+      if typeof group is 'string'
+        alias = aliases.get(group)
+        unless alias
+          alias = "LogosSlot_#{aliases.size}"
+          alias += '_' while content.includes(alias)
+          aliases.set(group, alias)
+        edits.push [node.start + 1, alias]
+        close = content.slice(node.start, node.end).match(/<\/Slot\s*>$/)
+        edits.push [node.end - close[0].length + 2, alias] if close
+      else
+        aliases.set(undefined, 'Slot')
+    visit(child) for child in Object.values(node)
+    return
+  visit(parse(content, { modern: true }).fragment)
+  edits.sort((a, b) -> b[0] - a[0])
+  for [offset, alias] in edits
+    content = content.slice(0, offset) + alias + content.slice(offset + 4)
+  imports = Array.from(aliases, ([group, alias]) ->
+    key = if group is undefined then '' else ':' + Buffer.from(group, 'utf16le').toString('hex')
+    "import #{alias} from 'svelte-view-engine:slot#{key}';"
+  )
+  { content, imports }
+
+module.exports = { discoverGroupedViews, isGroupedViewPath, resolveDirectView, slotSource, slotImports }
