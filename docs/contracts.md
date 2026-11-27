@@ -26,20 +26,20 @@ de views do host é preservada. O alias `createRuntimeModule` permanece no camin
 
 ## Grupos de views
 
-O motor descobre \`views/<Nome>.<Grupo>.svelte\` e \`.svx\` no workspace em ordem
-alfabética de pacote e nome de arquivo. \`views/Billing.Widget.svelte\` entra no
-grupo \`Widget\` com o alvo \`pacote:Billing:Widget\`. O sufixo \`.public\` segue
-reservado às rotas públicas. As views de \`views/widgets/\` também entram no
-grupo \`Widget\` e continuam disponíveis pela API legada de \`<Widget>\`.
+O motor descobre `views/<Nome>.<Grupo>.svelte` e `.svx` no workspace em ordem
+alfabética de pacote e nome de arquivo. `views/Billing.Widget.svelte` entra no
+grupo `Widget` com o alvo `pacote:Billing:Widget`. O sufixo `.public` segue
+reservado às rotas públicas. As views de `views/widgets/` também entram no
+grupo `Widget` e continuam disponíveis pela API legada de `<Widget>`.
 Se um widget estiver nos dois locais com o mesmo nome, o arquivo de primeiro
 nível tem precedência.
 
-O compilador disponibiliza \`<Slot>\` automaticamente. O filtro recebe entradas
-\`{ pkg, name, group, target, component }\`. O comparador ordena a lista filtrada.
-\`workspace\` e as demais props de apresentação são encaminhadas ao componente.
-O snippet \`children(item, renderItem)\` permite envolver cada item.
+O compilador disponibiliza `<Slot>` automaticamente. O filtro recebe entradas
+`{ pkg, name, group, target, component }`. O comparador ordena a lista filtrada.
+`workspace` e as demais props de apresentação são encaminhadas ao componente.
+O snippet `children(item, renderItem)` permite envolver cada item.
 
-\`\`\`svelte
+```svelte
 <Slot group="Widget" {workspace} />
 
 <ul>
@@ -49,11 +49,11 @@ O snippet \`children(item, renderItem)\` permite envolver cada item.
     {/snippet}
   </Slot>
 </ul>
-\`\`\`
+```
 
-\`views/Index.svelte\` e outras views sem grupo mantêm o endereçamento direto.
+`views/Index.svelte` e outras views sem grupo mantêm o endereçamento direto.
 Para renderizar uma delas em outra view, use um import estático como
-\`import Index from 'logos-view:Auth:Index'\`, com o nome da pasta do pacote.
+`import Index from 'logos-view:Auth:Index'`, com o nome da pasta do pacote.
 
 ## HMR, offline e compatibilidade
 
