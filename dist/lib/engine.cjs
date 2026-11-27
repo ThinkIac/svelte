@@ -14,9 +14,15 @@
  * e dispara `logos:views-changed` no documento, para que a aplicação possa
  * desenhar a própria UI de "há uma atualização" em vez da barra embutida.
  */
-var CACHE_DIR, SvelteEngine, TAILWIND_CDN_URL, VIEW_MANIFEST_FORMAT, __assign, __importDefault, __read, __spreadArray, __values, assets_1, crypto_1, filePickerProtocolClientScript, file_digests_1, fs_1, hmrClientScript, isHotReloadMode, path_1, requireDep, tailwind_styles_1, utils_1, viewGroups;
+var CACHE_DIR, SvelteEngine, TAILWIND_CDN_URL, VIEW_MANIFEST_FORMAT, __assign, __importDefault, __read, __spreadArray, __values, assets_1, createHash, crypto_1, filePickerProtocolClientScript, file_digests_1, fs_1, hmrClientScript, isHotReloadMode, path_1, requireDep, slotGroupKey, tailwind_styles_1, utils_1, viewGroups;
 
 viewGroups = require('./view-groups.cjs');
+
+({createHash} = require('node:crypto'));
+
+slotGroupKey = function(group) {
+  return createHash('sha256').update(group, 'utf16le').digest('hex');
+};
 
 requireDep = function(name) {
   var err;
@@ -454,12 +460,41 @@ SvelteEngine = (function() {
     return hits;
   };
   // ── Widget registry (unchanged behaviour, collision-safe) ────────────────
+  SvelteEngine.prototype.writeSlotRegistry = function(registryPath, entries) {
+    var source;
+    source = viewGroups.slotSource(entries);
+    if (fs_1.default.existsSync(registryPath) && fs_1.default.readFileSync(registryPath, 'utf-8') === source) {
+      return false;
+    }
+    fs_1.default.writeFileSync(registryPath, source);
+    return true;
+  };
   SvelteEngine.prototype.buildWidgetRegistry = function(workspace) {
-    var component, group, groupedViews, importName, importNames, imports, j, len, mappings, name, owners, ownersByName, packages, pkg, qualifiedName, quote, registryBody, simpleAliases, slotSource, x;
+    var changedSlots, component, entries, entry, file, group, groupedViews, importName, importNames, imports, j, k, key, len, len1, len2, mappings, match, name, owners, ownersByName, packages, pkg, q, qualifiedName, quote, ref, registryBody, registryPath, simpleAliases, viewsByGroup, x;
     groupedViews = viewGroups.discoverGroupedViews(workspace);
-    slotSource = viewGroups.slotSource(groupedViews);
-    if (!fs_1.default.existsSync(this.slotRegistryPath) || fs_1.default.readFileSync(this.slotRegistryPath, 'utf-8') !== slotSource) {
-      fs_1.default.writeFileSync(this.slotRegistryPath, slotSource);
+    changedSlots = [];
+    if (this.writeSlotRegistry(this.slotRegistryPath, groupedViews)) {
+      changedSlots.push(this.slotRegistryPath);
+    }
+    viewsByGroup = new Map();
+    for (j = 0, len = groupedViews.length; j < len; j++) {
+      entry = groupedViews[j];
+      key = slotGroupKey(entry.group);
+      entries = viewsByGroup.get(key) || [];
+      entries.push(entry);
+      viewsByGroup.set(key, entries);
+    }
+    ref = fs_1.default.readdirSync(this.cacheDir);
+    for (k = 0, len1 = ref.length; k < len1; k++) {
+      file = ref[k];
+      match = file.match(/^SlotRegistry-([0-9a-f]{64})\.svelte$/);
+      if (!match) {
+        continue;
+      }
+      registryPath = path_1.default.join(this.cacheDir, file);
+      if (this.writeSlotRegistry(registryPath, viewsByGroup.get(match[1]) || [])) {
+        changedSlots.push(registryPath);
+      }
     }
     this.widgetIndex = Object.create(null);
     imports = [];
@@ -469,8 +504,8 @@ SvelteEngine = (function() {
     quote = function(value) {
       return "'" + JSON.stringify(value).slice(1, -1).replace(/'/g, "\\'") + "'";
     };
-    for (j = 0, len = groupedViews.length; j < len; j++) {
-      ({pkg, name, group, component} = groupedViews[j]);
+    for (q = 0, len2 = groupedViews.length; q < len2; q++) {
+      ({pkg, name, group, component} = groupedViews[q]);
       if (!(group === 'Widget')) {
         continue;
       }
@@ -518,6 +553,7 @@ SvelteEngine = (function() {
     // Substituto de uma view de outro pacote que não está instalado. Renderiza
     // nada de propósito: o recurso some da tela, em vez de derrubar a página.
     fs_1.default.writeFileSync(this.optionalStubPath, '<!-- pacote opcional ausente -->\n');
+    return changedSlots;
   };
   SvelteEngine.prototype.getWidgetIndex = function() {
     return __assign({}, this.widgetIndex);
@@ -564,17 +600,18 @@ SvelteEngine = (function() {
     };
   };
   SvelteEngine.prototype.preprocess = function() {
-    var importId, importStmt, registryPath, slotPath;
+    var cacheDir, importId, importStmt, registryPath;
     registryPath = this.widgetRegistryPath;
-    slotPath = this.slotRegistryPath;
+    cacheDir = this.cacheDir;
     importId = '\'svelte-view-engine:registry\'';
     importStmt = 'import Widget from '.concat(importId, ';');
     return {
       markup: function(_a) {
-        var content, filename, imports, scriptMatch, statements;
+        var content, filename, generatedSlot, imports, resolved, scriptMatch, statements;
         content = _a.content;
         filename = _a.filename;
-        if (filename === registryPath || filename === slotPath) {
+        generatedSlot = filename && path_1.default.dirname(filename) === cacheDir && /^SlotRegistry(?:-[0-9a-f]*)?\.svelte$/.test(path_1.default.basename(filename));
+        if (filename === registryPath || generatedSlot) {
           return {
             code: content
           };
@@ -584,7 +621,9 @@ SvelteEngine = (function() {
           imports.push(importStmt);
         }
         if (/<Slot(?=[\s\/>])/.test(content) && !/\bimport\s+Slot\b/.test(content)) {
-          imports.push("import Slot from 'svelte-view-engine:slot';");
+          resolved = viewGroups.slotImports(content);
+          content = resolved.content;
+          imports.push(...resolved.imports);
         }
         if (!imports.length) {
           return {
@@ -649,6 +688,23 @@ SvelteEngine = (function() {
           }
           return {
             path: _this.slotRegistryPath
+          };
+        });
+        build.onResolve({
+          filter: /^svelte-view-engine:slot:[0-9a-f]*$/
+        }, function(args) {
+          var entries, group, key, registryPath;
+          group = Buffer.from(args.path.split(':').at(-1), 'hex').toString('utf16le');
+          key = slotGroupKey(group);
+          registryPath = path_1.default.join(_this.cacheDir, `SlotRegistry-${key}.svelte`);
+          if (!fs_1.default.existsSync(registryPath)) {
+            entries = viewGroups.discoverGroupedViews(workspace).filter(function(entry) {
+              return entry.group === group;
+            });
+            _this.writeSlotRegistry(registryPath, entries);
+          }
+          return {
+            path: registryPath
           };
         });
         build.onResolve({

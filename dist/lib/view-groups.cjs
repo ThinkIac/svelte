@@ -1,4 +1,4 @@
-var componentName, discoverGroupedViews, fs, groupedName, isFile, isGroupedViewPath, path, readNames, resolveDirectView, slotSource;
+var componentName, discoverGroupedViews, fs, groupedName, isFile, isGroupedViewPath, path, readNames, resolveDirectView, slotImports, slotSource;
 
 fs = require('node:fs');
 
@@ -157,4 +157,70 @@ slotSource = function(entries) {
 {/each}`;
 };
 
-module.exports = {discoverGroupedViews, isGroupedViewPath, resolveDirectView, slotSource};
+slotImports = function(content) {
+  var alias, aliases, edits, i, imports, len, offset, parse, visit;
+  ({parse} = require('svelte/compiler'));
+  aliases = new Map();
+  edits = [];
+  visit = function(node) {
+    var alias, attr, child, close, group, i, j, len, len1, ref, ref1, ref2, value;
+    if (!(node && typeof node === 'object')) {
+      return;
+    }
+    if (node.type === 'Component' && node.name === 'Slot') {
+      group = void 0;
+      ref = node.attributes;
+      for (i = 0, len = ref.length; i < len; i++) {
+        attr = ref[i];
+        if (attr.type === 'SpreadAttribute') {
+          group = void 0;
+        }
+        if (attr.type === 'Attribute' && attr.name === 'group') {
+          value = attr.value;
+          value = value.length === 1 ? value[0] : value;
+          group = value.type === 'Text' ? value.data : (ref1 = value.expression) != null ? ref1.value : void 0;
+        }
+      }
+      if (typeof group === 'string') {
+        alias = aliases.get(group);
+        if (!alias) {
+          alias = `LogosSlot_${aliases.size}`;
+          while (content.includes(alias)) {
+            alias += '_';
+          }
+          aliases.set(group, alias);
+        }
+        edits.push([node.start + 1, alias]);
+        close = content.slice(node.start, node.end).match(/<\/Slot\s*>$/);
+        if (close) {
+          edits.push([node.end - close[0].length + 2, alias]);
+        }
+      } else {
+        aliases.set(void 0, 'Slot');
+      }
+    }
+    ref2 = Object.values(node);
+    for (j = 0, len1 = ref2.length; j < len1; j++) {
+      child = ref2[j];
+      visit(child);
+    }
+  };
+  visit(parse(content, {
+    modern: true
+  }).fragment);
+  edits.sort(function(a, b) {
+    return b[0] - a[0];
+  });
+  for (i = 0, len = edits.length; i < len; i++) {
+    [offset, alias] = edits[i];
+    content = content.slice(0, offset) + alias + content.slice(offset + 4);
+  }
+  imports = Array.from(aliases, function([group, alias]) {
+    var key;
+    key = group === void 0 ? '' : ':' + Buffer.from(group, 'utf16le').toString('hex');
+    return `import ${alias} from 'svelte-view-engine:slot${key}';`;
+  });
+  return {content, imports};
+};
+
+module.exports = {discoverGroupedViews, isGroupedViewPath, resolveDirectView, slotSource, slotImports};

@@ -375,7 +375,7 @@ createRuntime = function(bridge) {
   };
   onViewsFileChanged = async function(container, payload) {
     var detail;
-    var _a, _b, affected, changed, component, detail, engine, error, hub, j, k, len, len1, ref, ref1, registryChanged, registryPath, signal;
+    var _a, _b, affected, changed, changedSlots, component, detail, engine, error, hub, j, k, len, len1, ref, ref1, registryChanged, registryPath, signal;
     _a = void 0;
     _b = void 0;
     if (false) {
@@ -387,8 +387,8 @@ createRuntime = function(bridge) {
     registryChanged = isWidgetPath(changed) || isGroupedViewPath(changed) || /[\\\/]views$/.test(changed);
     affected = new Set(engine.affectedComponents(changed));
     if (registryChanged) {
-      engine.buildWidgetRegistry(container.workspace);
-      ref = [engine.widgetRegistryPath, engine.slotRegistryPath];
+      changedSlots = engine.buildWidgetRegistry(container.workspace);
+      ref = [engine.widgetRegistryPath, ...changedSlots];
       for (j = 0, len = ref.length; j < len; j++) {
         registryPath = ref[j];
         ref1 = engine.affectedComponents(registryPath);

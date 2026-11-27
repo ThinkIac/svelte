@@ -313,8 +313,8 @@ createRuntime = (bridge) ->
     registryChanged = isWidgetPath(changed) or isGroupedViewPath(changed) or /[\\/]views$/.test(changed)
     affected = new Set(engine.affectedComponents(changed))
     if registryChanged
-      engine.buildWidgetRegistry container.workspace
-      for registryPath in [engine.widgetRegistryPath, engine.slotRegistryPath]
+      changedSlots = engine.buildWidgetRegistry(container.workspace)
+      for registryPath in [engine.widgetRegistryPath, ...changedSlots]
         for component in engine.affectedComponents(registryPath)
           affected.add(component)
     affected = Array.from(affected)

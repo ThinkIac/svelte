@@ -93,4 +93,42 @@ slotSource = (entries) ->
   {/each}
   """
 
-module.exports = { discoverGroupedViews, isGroupedViewPath, resolveDirectView, slotSource }
+slotImports = (content) ->
+  { parse } = require('svelte/compiler')
+  aliases = new Map()
+  edits = []
+  visit = (node) ->
+    return unless node and typeof node is 'object'
+    if node.type is 'Component' and node.name is 'Slot'
+      group = undefined
+      for attr in node.attributes
+        if attr.type is 'SpreadAttribute'
+          group = undefined
+        if attr.type is 'Attribute' and attr.name is 'group'
+          value = attr.value
+          value = if value.length is 1 then value[0] else value
+          group = if value.type is 'Text' then value.data else value.expression?.value
+      if typeof group is 'string'
+        alias = aliases.get(group)
+        unless alias
+          alias = "LogosSlot_#{aliases.size}"
+          alias += '_' while content.includes(alias)
+          aliases.set(group, alias)
+        edits.push [node.start + 1, alias]
+        close = content.slice(node.start, node.end).match(/<\/Slot\s*>$/)
+        edits.push [node.end - close[0].length + 2, alias] if close
+      else
+        aliases.set(undefined, 'Slot')
+    visit(child) for child in Object.values(node)
+    return
+  visit(parse(content, { modern: true }).fragment)
+  edits.sort((a, b) -> b[0] - a[0])
+  for [offset, alias] in edits
+    content = content.slice(0, offset) + alias + content.slice(offset + 4)
+  imports = Array.from(aliases, ([group, alias]) ->
+    key = if group is undefined then '' else ':' + Buffer.from(group, 'utf16le').toString('hex')
+    "import #{alias} from 'svelte-view-engine:slot#{key}';"
+  )
+  { content, imports }
+
+module.exports = { discoverGroupedViews, isGroupedViewPath, resolveDirectView, slotSource, slotImports }

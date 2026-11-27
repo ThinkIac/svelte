@@ -1,4 +1,6 @@
 viewGroups = require('./view-groups.cjs')
+{ createHash } = require('node:crypto')
+slotGroupKey = (group) -> createHash('sha256').update(group, 'utf16le').digest('hex')
 
 requireDep = (name) ->
   try
@@ -359,11 +361,27 @@ SvelteEngine = (->
 
   # ── Widget registry (unchanged behaviour, collision-safe) ────────────────
 
+  SvelteEngine::writeSlotRegistry = (registryPath, entries) ->
+    source = viewGroups.slotSource(entries)
+    return false if fs_1.default.existsSync(registryPath) and fs_1.default.readFileSync(registryPath, 'utf-8') is source
+    fs_1.default.writeFileSync registryPath, source
+    true
+
   SvelteEngine::buildWidgetRegistry = (workspace) ->
     groupedViews = viewGroups.discoverGroupedViews(workspace)
-    slotSource = viewGroups.slotSource(groupedViews)
-    if !fs_1.default.existsSync(@slotRegistryPath) or fs_1.default.readFileSync(@slotRegistryPath, 'utf-8') isnt slotSource
-      fs_1.default.writeFileSync @slotRegistryPath, slotSource
+    changedSlots = []
+    changedSlots.push(@slotRegistryPath) if @writeSlotRegistry(@slotRegistryPath, groupedViews)
+    viewsByGroup = new Map()
+    for entry in groupedViews
+      key = slotGroupKey(entry.group)
+      entries = viewsByGroup.get(key) or []
+      entries.push(entry)
+      viewsByGroup.set(key, entries)
+    for file in fs_1.default.readdirSync(@cacheDir)
+      match = file.match(/^SlotRegistry-([0-9a-f]{64})\.svelte$/)
+      continue unless match
+      registryPath = path_1.default.join(@cacheDir, file)
+      changedSlots.push(registryPath) if @writeSlotRegistry(registryPath, viewsByGroup.get(match[1]) or [])
 
     @widgetIndex = Object.create(null)
     imports = []
@@ -403,7 +421,7 @@ SvelteEngine = (->
     # Substituto de uma view de outro pacote que não está instalado. Renderiza
     # nada de propósito: o recurso some da tela, em vez de derrubar a página.
     fs_1.default.writeFileSync @optionalStubPath, '<!-- pacote opcional ausente -->\n'
-    return
+    changedSlots
 
   SvelteEngine::getWidgetIndex = ->
     __assign {}, @widgetIndex
@@ -442,18 +460,21 @@ SvelteEngine = (->
 
   SvelteEngine::preprocess = ->
     registryPath = @widgetRegistryPath
-    slotPath = @slotRegistryPath
+    cacheDir = @cacheDir
     importId = '\'svelte-view-engine:registry\''
     importStmt = 'import Widget from '.concat(importId, ';')
     { markup: (_a) ->
       content = _a.content
       filename = _a.filename
-      return { code: content } if filename in [registryPath, slotPath]
+      generatedSlot = filename and path_1.default.dirname(filename) is cacheDir and /^SlotRegistry(?:-[0-9a-f]*)?\.svelte$/.test(path_1.default.basename(filename))
+      return { code: content } if filename is registryPath or generatedSlot
       imports = []
       if content.includes('<Widget') and !content.includes(importId)
         imports.push(importStmt)
       if /<Slot(?=[\s/>])/.test(content) and !/\bimport\s+Slot\b/.test(content)
-        imports.push("import Slot from 'svelte-view-engine:slot';")
+        resolved = viewGroups.slotImports(content)
+        content = resolved.content
+        imports.push(...resolved.imports)
       return { code: content } unless imports.length
       statements = imports.join('\n  ')
       scriptMatch = content.match(/<script\b(?![^>]*\b(?:module|context)\b)[^>]*>/)
@@ -496,6 +517,14 @@ SvelteEngine = (->
           unless fs_1.default.existsSync(_this.slotRegistryPath)
             _this.buildWidgetRegistry(workspace)
           { path: _this.slotRegistryPath }
+        build.onResolve { filter: /^svelte-view-engine:slot:[0-9a-f]*$/ }, (args) ->
+          group = Buffer.from(args.path.split(':').at(-1), 'hex').toString('utf16le')
+          key = slotGroupKey(group)
+          registryPath = path_1.default.join(_this.cacheDir, "SlotRegistry-#{key}.svelte")
+          unless fs_1.default.existsSync(registryPath)
+            entries = viewGroups.discoverGroupedViews(workspace).filter((entry) -> entry.group is group)
+            _this.writeSlotRegistry(registryPath, entries)
+          { path: registryPath }
         build.onResolve { filter: /^logos-view:/ }, (args) ->
           match = args.path.match(/^logos-view:([\w-]+):([\w-]+)$/)
           return null unless match

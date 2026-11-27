@@ -34,7 +34,11 @@ grupo `Widget` e continuam disponíveis pela API legada de `<Widget>`.
 Se um widget estiver nos dois locais com o mesmo nome, o arquivo de primeiro
 nível tem precedência.
 
-O compilador disponibiliza `<Slot>` automaticamente. O filtro recebe entradas
+O compilador disponibiliza `<Slot>` automaticamente. Um grupo literal, como `group="Action"`,
+limita os imports ao grupo informado. Uma expressão dinâmica mantém os grupos
+no bundle para permitir seleção durante a renderização.
+
+O filtro recebe entradas
 `{ pkg, name, group, target, component }`. O comparador ordena a lista filtrada.
 `workspace` e as demais props de apresentação são encaminhadas ao componente.
 O snippet `children(item, renderItem)` permite envolver cada item.
